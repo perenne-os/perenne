@@ -8,12 +8,14 @@ Helper scripts for common development actions. Run them from the repository root
 |--------|--------------|
 | `build.ps1` | Builds the Cargo workspace (host) and runs the unit tests. |
 | `run-qemu.ps1` | Boots QEMU's RISC-V virtual machine with the built-in OpenSBI firmware. |
+| `check-references.ps1` | Validates doc cross-references: every `KB-####` id, every root-relative `docs/`/`knowledge-base/` path, and every Markdown link target (`.md`) mentioned must actually resolve. Skips historical snapshots under `docs/superpowers/`. |
 
 ## Usage
 
 ```powershell
 ./tools/build.ps1
 ./tools/run-qemu.ps1
+./tools/check-references.ps1
 ```
 
 ## Notes

@@ -18,8 +18,11 @@ knowledge-base/
 ├── README.md              this file
 ├── schema/                the format that records follow
 │   ├── issue-record.md    the field-by-field schema + a blank template
-│   └── example-0001.md    a filled, real example record
+│   └── example-0001.md    pointer to the filled, real example (entries/KB-0001.md)
 └── entries/               individual diagnosed-issue records accumulate here
+    ├── KB-0001.md         SSH commit-signing on Windows (also the worked example)
+    ├── KB-0002.md         SSH push transport on Windows (twin of KB-0001)
+    └── KB-0003.md         Windows SDK / kernel32.lib linker error
 ```
 
 ## Status (Phase 0)
