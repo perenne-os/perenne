@@ -1,0 +1,22 @@
+# Cargo configuration.
+#
+# Phase 0: intentionally does NOT set a default `[build] target`, so
+# `cargo build`/`cargo test` run on the host and stay green.
+#
+# Phase 1 will uncomment the lines below to cross-build the freestanding
+# kernel for RISC-V and run it under QEMU. They are documented here now so
+# the intent is captured.
+#
+# [build]
+# target = "riscv64gc-unknown-none-elf"
+#
+# [unstable]
+# build-std = ["core", "compiler_builtins", "alloc"]
+# build-std-features = ["compiler-builtins-mem"]
+#
+# [target.riscv64gc-unknown-none-elf]
+# runner = "qemu-system-riscv64 -machine virt -nographic -bios default -kernel"
+
+[alias]
+# Convenience aliases usable today.
+lint = "clippy --workspace --all-targets"
