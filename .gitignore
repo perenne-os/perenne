@@ -1,6 +1,9 @@
 # Brainstorming / visual-companion scratch files
 .superpowers/
 
+# Local Claude Code settings (may contain personal info)
+.claude/
+
 # Rust / Cargo build output
 /target/
 **/target/
