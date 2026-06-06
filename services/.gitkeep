@@ -1,0 +1,3 @@
+# This directory will hold user-space services (drivers, filesystem, network)
+# in the microkernel design. Empty for now (Phase 6+). Tracked so the
+# structure exists from day one.
