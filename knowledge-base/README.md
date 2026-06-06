@@ -22,7 +22,8 @@ knowledge-base/
 └── entries/               individual diagnosed-issue records accumulate here
     ├── KB-0001.md         SSH commit-signing on Windows (also the worked example)
     ├── KB-0002.md         SSH push transport on Windows (twin of KB-0001)
-    └── KB-0003.md         Windows SDK / kernel32.lib linker error
+    ├── KB-0003.md         Windows SDK / kernel32.lib linker error
+    └── KB-0004.md         SSH signature verification (allowed_signers)
 ```
 
 ## Status (Phase 0)
