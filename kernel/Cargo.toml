@@ -1,0 +1,8 @@
+[package]
+name = "kernel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+kernel-common = { path = "../libs/common" }

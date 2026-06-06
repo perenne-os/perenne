@@ -1,0 +1,28 @@
+# Workspace root for the Kernel project (working title).
+# Member crates are intentional Phase 0 placeholders that compile on the
+# host. They become the real microkernel, HAL, arch layer, and libraries
+# in later phases. See docs/roadmap/roadmap.md.
+[workspace]
+resolver = "2"
+members = [
+    "kernel",
+    "hal",
+    "arch/riscv64",
+    "libs/common",
+    "libs/crypto",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+license = "Apache-2.0"
+authors = ["Kathir"]
+repository = ""
+
+# Single source of truth for the provisional project name (see ADR 0006).
+# When the project is renamed, this and the crate names are the only
+# identifiers to update.
+[workspace.metadata.project]
+name = "kernel"
+display-name = "Kernel (working title)"
+provisional-name = true

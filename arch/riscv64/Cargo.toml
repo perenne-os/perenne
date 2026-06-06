@@ -1,0 +1,7 @@
+[package]
+name = "kernel-arch-riscv64"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
