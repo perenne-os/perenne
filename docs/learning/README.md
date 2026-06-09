@@ -11,3 +11,4 @@ This folder holds the author's learning notes as systems-programming concepts cl
 ## Notes
 
 - [0001 — Development environment](0001-dev-environment.md)
+- [0002 — Boot and "hello world" (Phase 1)](0002-boot-and-hello-world.md)

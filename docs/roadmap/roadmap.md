@@ -2,16 +2,16 @@
 
 A living document. Think in **years, not months** — each phase is small, real, and finishable, and teaches the concept the next one needs. Every phase gets its own design → plan → build cycle (specs in `docs/superpowers/specs/`, plans in `docs/superpowers/plans/`).
 
-## Phase 0 — Foundation & vision  *(in progress)*
+## Phase 0 — Foundation & vision  *(done — 2026-06-06)*
 
 - **Goal:** repository skeleton, founding documents, ADRs, a compiling Rust workspace, pinned toolchain, and a verified QEMU/RISC-V dev environment.
 - **You learn:** the toolchain, Cargo workspaces, how the project is organized and why.
 - **Done when:** the workspace builds and tests pass with one command, QEMU boots the RISC-V firmware, and the founding docs are complete. *(No kernel logic yet.)*
 
-## Phase 1 — Hello world from our own kernel
+## Phase 1 — Hello world from our own kernel  *(done — 2026-06-09)*
 
 - **Goal:** boot a tiny `no_std` kernel in QEMU and print to the screen.
-- **You learn:** the boot process, freestanding Rust, custom targets, `build-std`, linker scripts.
+- **You learn:** the boot process, freestanding Rust, linker scripts, SBI calls (and why `build-std` wasn't needed yet — see [learning note 0002](../learning/0002-boot-and-hello-world.md)).
 - **Done when:** `./tools/run-qemu.ps1` loads our kernel and it prints "hello world".
 
 ## Phase 2 — The kernel grows up

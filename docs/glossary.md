@@ -20,6 +20,12 @@ Plain-language definitions of terms used throughout these docs. Aimed at someone
 - **Cross-compilation** — building a program on one kind of machine (e.g. an x86-64 laptop) to run on a different kind (e.g. a RISC-V computer).
 - **Bootloader / firmware** — the first code that runs when a machine powers on; it initializes hardware and then hands control to the kernel.
 - **OpenSBI** — the standard firmware/runtime layer for RISC-V that starts before the kernel; QEMU includes it by default.
+- **SBI (Supervisor Binary Interface)** — the standard interface a RISC-V kernel (S-mode) uses to request services from firmware (M-mode), e.g. "print this byte". OpenSBI implements it.
+- **ecall** — the RISC-V instruction that traps into the next-more-privileged mode; how the kernel calls the SBI (and how user programs will call the kernel later).
+- **hart** — RISC-V's term for a hardware thread (a CPU core as the software sees it).
+- **M-mode / S-mode / U-mode** — RISC-V privilege levels: machine (firmware, most privileged), supervisor (the kernel), user (applications).
+- **Linker script** — instructions to the linker about where in memory each part of a binary must be placed; essential on bare metal where addresses are physical and fixed.
+- **wfi (wait for interrupt)** — RISC-V instruction that puts a hart to sleep until an interrupt arrives; our kernel's idle loop.
 - **Post-quantum cryptography (PQC)** — encryption algorithms designed to resist attacks from future quantum computers; ordinary software running on ordinary chips.
 - **ADR (Architecture Decision Record)** — a short, dated note recording one significant decision and the reasoning behind it.
 - **Self-healing / knowledge organism** — this project's support model: the OS keeps a growing memory of issues and proven fixes and consults itself to diagnose and repair problems.

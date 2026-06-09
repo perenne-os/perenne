@@ -13,11 +13,12 @@ See [`docs/learning/0001-dev-environment.md`](docs/learning/0001-dev-environment
 ## Build and run
 
 ```powershell
-./tools/build.ps1     # builds the workspace and runs the tests
-./tools/run-qemu.ps1  # boots the RISC-V VM (OpenSBI firmware); exit with Ctrl-A then X
+./tools/build.ps1     # builds the workspace + tests, then cross-builds the kernel
+./tools/run-qemu.ps1  # boots OUR kernel under QEMU; exit with Ctrl-A then X
+./tools/test-qemu.ps1 # non-interactive boot smoke test (exit code 0 = pass)
 ```
 
-Every change must keep the **host build green** (`./tools/build.ps1` passes) and keep the docs accurate.
+Every change must keep the **build green** (`./tools/build.ps1` passes), keep the **kernel booting** (`./tools/test-qemu.ps1` passes), and keep the docs accurate.
 
 ## Commits
 

@@ -1,6 +1,9 @@
 # Pins the Rust toolchain for reproducible builds across machines.
-# Nightly is required for `-Z build-std` (building core/alloc for our
-# bare-metal RISC-V target) starting in Phase 1.
+# Phase 0 assumed nightly was needed for `-Z build-std`; Phase 1 showed
+# the built-in riscv64gc-unknown-none-elf target ships a precompiled
+# `core`, so build-std is NOT needed yet. Nightly is kept for upcoming
+# phases (custom target specs, unstable features) — revisit if stable
+# suffices. See docs/learning/0002-boot-and-hello-world.md.
 [toolchain]
 channel = "nightly"
 components = ["rust-src", "rustfmt", "clippy", "llvm-tools"]

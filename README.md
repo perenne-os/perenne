@@ -2,7 +2,7 @@
 
 A from-scratch, **security-first**, **hardware-agnostic** operating-system kernel written in **Rust**, built around a **microkernel** design and a **self-healing "knowledge organism"** — an OS that diagnoses and documents its own problems instead of depending on a human support community.
 
-> **Status: Phase 0 — foundation.** No kernel functionality yet. This is the documented skeleton, the locked architectural decisions, and a verified development environment. Booting a real kernel is Phase 1.
+> **Status: Phase 1 — hello world.** Our own freestanding `no_std` kernel boots under QEMU/riscv64 and prints `hello world` via the SBI console. Phase 0 (foundation docs + toolchain) is complete.
 
 This is a deliberate, multi-year, solo, open-source effort. Correctness and security come before speed and features. A tiny verified "hello world" kernel is considered a legitimate success.
 
@@ -30,7 +30,7 @@ Full rationale lives in [`docs/decisions/`](docs/decisions/) (Architecture Decis
 ```
 docs/            Vision, architecture, decisions (ADRs), roadmap, glossary, learning notes
 knowledge-base/  The self-healing organism's memory: issue + fix records and their schema
-kernel/          The microkernel (Rust) — placeholder until Phase 1
+kernel/          The microkernel — freestanding no_std binary (boots since Phase 1)
 arch/riscv64/    Architecture-specific code (first target)
 hal/             Hardware Abstraction Layer (the device-agnostic boundary)
 services/        User-space services: drivers, filesystem, network (Phase 6+)
@@ -46,14 +46,24 @@ tests/           Integration / system test harnesses
 - [QEMU](https://www.qemu.org) with `qemu-system-riscv64` on your PATH
 - On Windows: the MSVC toolchain **with the Windows SDK** (needed to link host test binaries)
 
-**Build and test**
+**Build and test** (host build + unit tests, then the riscv64 cross-build)
 ```powershell
 ./tools/build.ps1
 ```
 
-**Boot the RISC-V virtual machine** (currently boots OpenSBI firmware; our kernel arrives in Phase 1)
+**Boot the kernel in QEMU**
 ```powershell
 ./tools/run-qemu.ps1   # exit QEMU with Ctrl-A then X
+```
+Expect the OpenSBI banner, then:
+```
+hello world from Kernel (working title) - Phase 1 (hart 0)
+(kernel is idle; exit QEMU with Ctrl-A then X)
+```
+
+**Automated boot check** (non-interactive; exit code 0 = pass)
+```powershell
+./tools/test-qemu.ps1
 ```
 
 See [`docs/learning/0001-dev-environment.md`](docs/learning/0001-dev-environment.md) for environment notes (and the WSL2 alternative).
