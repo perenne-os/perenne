@@ -6,3 +6,4 @@ license.workspace = true
 
 [dependencies]
 kernel-common = { path = "../libs/common" }
+kernel-arch-riscv64 = { path = "../arch/riscv64" }

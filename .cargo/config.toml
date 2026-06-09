@@ -1,22 +1,24 @@
 # Cargo configuration.
 #
-# Phase 0: intentionally does NOT set a default `[build] target`, so
-# `cargo build`/`cargo test` run on the host and stay green.
+# The default target stays UNSET so `cargo build` / `cargo test` run on
+# the host and stay green. The freestanding kernel is cross-built
+# explicitly:
 #
-# Phase 1 will uncomment the lines below to cross-build the freestanding
-# kernel for RISC-V and run it under QEMU. They are documented here now so
-# the intent is captured.
+#   cargo build -p kernel --target riscv64gc-unknown-none-elf
 #
-# [build]
-# target = "riscv64gc-unknown-none-elf"
-#
-# [unstable]
-# build-std = ["core", "compiler_builtins", "alloc"]
-# build-std-features = ["compiler-builtins-mem"]
-#
-# [target.riscv64gc-unknown-none-elf]
-# runner = "qemu-system-riscv64 -machine virt -nographic -bios default -kernel"
+# Phase 0 staged `-Z build-std` here, but it turned out to be
+# unnecessary: riscv64gc-unknown-none-elf is a BUILT-IN target and
+# rustup ships a precompiled `core` for it (installed via
+# rust-toolchain.toml). See docs/learning/0002-boot-and-hello-world.md.
 
 [alias]
-# Convenience aliases usable today.
+# Convenience aliases.
 lint = "clippy --workspace --all-targets"
+# Cross-build the kernel and boot it under QEMU in one command.
+qemu = "run -p kernel --target riscv64gc-unknown-none-elf"
+
+[target.riscv64gc-unknown-none-elf]
+# `cargo run`/`cargo qemu` boots the produced ELF under QEMU. OpenSBI
+# (-bios default) starts in M-mode, then jumps to our entry in S-mode.
+# Exit with Ctrl-A then X.
+runner = "qemu-system-riscv64 -machine virt -nographic -bios default -kernel"
