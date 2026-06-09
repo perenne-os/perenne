@@ -58,7 +58,7 @@ CONTRIBUTING.md                   Task 6 (modify: test command, if it lists comm
 - Modify: `libs/common/src/lib.rs`
 - Modify: `kernel/src/lib.rs`
 
-- [ ] **Step 1: Make `kernel-common` no_std**
+- [x] **Step 1: Make `kernel-common` no_std**
 
 Replace the top of `libs/common/src/lib.rs` so the crate is `no_std` outside tests (rest of the file, including the existing test, is unchanged):
 
@@ -72,7 +72,7 @@ Replace the top of `libs/common/src/lib.rs` so the crate is `no_std` outside tes
 //! arrive in later phases.
 ```
 
-- [ ] **Step 2: Replace the kernel lib's String banner with a no_std greeting**
+- [x] **Step 2: Replace the kernel lib's String banner with a no_std greeting**
 
 Replace `kernel/src/lib.rs` entirely with:
 
@@ -103,7 +103,7 @@ mod tests {
 
 (The Phase 0 `banner()` function and its test are intentionally removed: `String` requires an allocator the bare-metal kernel doesn't have.)
 
-- [ ] **Step 3: Verify host build and tests stay green**
+- [x] **Step 3: Verify host build and tests stay green**
 
 Run:
 ```powershell
@@ -111,7 +111,7 @@ cargo build --workspace; cargo test --workspace
 ```
 Expected: build `Finished`; all tests pass (`test result: ok`), including the new `greeting_is_hello_world`.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```powershell
 git add libs/common/src/lib.rs kernel/src/lib.rs
@@ -129,7 +129,7 @@ Arch-specific code lives under `arch/` (docs/architecture/hardware-abstraction.m
 - Create: `arch/riscv64/src/sbi.rs`
 - Create: `arch/riscv64/src/console.rs`
 
-- [ ] **Step 1: Declare the gated modules in `arch/riscv64/src/lib.rs`**
+- [x] **Step 1: Declare the gated modules in `arch/riscv64/src/lib.rs`**
 
 Replace the file with:
 
@@ -162,7 +162,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Create `arch/riscv64/src/sbi.rs`**
+- [x] **Step 2: Create `arch/riscv64/src/sbi.rs`**
 
 ```rust
 //! Minimal Supervisor Binary Interface (SBI) wrappers.
@@ -192,7 +192,7 @@ pub fn console_putchar(c: u8) {
 }
 ```
 
-- [ ] **Step 3: Create `arch/riscv64/src/console.rs`**
+- [x] **Step 3: Create `arch/riscv64/src/console.rs`**
 
 ```rust
 //! Kernel console: formatted text output over the SBI firmware console.
@@ -238,7 +238,7 @@ macro_rules! println {
 }
 ```
 
-- [ ] **Step 4: Verify — host tests still pass AND the crate typechecks for riscv64**
+- [x] **Step 4: Verify — host tests still pass AND the crate typechecks for riscv64**
 
 Run:
 ```powershell
@@ -247,7 +247,7 @@ cargo build -p kernel-arch-riscv64 --target riscv64gc-unknown-none-elf
 ```
 Expected: host test `arch_is_riscv64` passes; the cross-build finishes `Finished` with no errors (this is the first time the gated modules actually compile — the precompiled `core` for the built-in target is used automatically, no `build-std`).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add arch/riscv64/src
@@ -263,7 +263,7 @@ The executable acceptance test for Phase 1: boot the kernel headless under QEMU,
 **Files:**
 - Create: `tools/test-qemu.ps1`
 
-- [ ] **Step 1: Create `tools/test-qemu.ps1`**
+- [x] **Step 1: Create `tools/test-qemu.ps1`**
 
 ```powershell
 # Boot smoke test: cross-builds the kernel, boots it headless under QEMU
@@ -319,7 +319,7 @@ if ($found) {
 }
 ```
 
-- [ ] **Step 2: Run it to verify it FAILS (no kernel binary exists yet)**
+- [x] **Step 2: Run it to verify it FAILS (no kernel binary exists yet)**
 
 Run:
 ```powershell
@@ -327,7 +327,7 @@ Run:
 ```
 Expected: the cross-build of `-p kernel` succeeds (lib only — no binary target exists yet), then **`BOOT TEST FAIL: kernel binary not produced ...`** and `exit=1`. This is the correct failing state.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```powershell
 git add tools/test-qemu.ps1
@@ -348,7 +348,7 @@ The heart of Phase 1: linker script, boot assembly, `kmain`, panic handler. Afte
 - Modify: `kernel/Cargo.toml`
 - Modify: `.cargo/config.toml`
 
-- [ ] **Step 1: Create the linker script `kernel/kernel.ld`**
+- [x] **Step 1: Create the linker script `kernel/kernel.ld`**
 
 ```
 /* Linker script for the QEMU riscv64 `virt` machine.
@@ -403,7 +403,7 @@ SECTIONS
 }
 ```
 
-- [ ] **Step 2: Create `kernel/build.rs`**
+- [x] **Step 2: Create `kernel/build.rs`**
 
 The linker script must apply ONLY to the riscv bare-metal build — passing `-T` to the host linker would break host builds/tests.
 
@@ -423,7 +423,7 @@ fn main() {
 }
 ```
 
-- [ ] **Step 3: Create `kernel/src/boot.rs`**
+- [x] **Step 3: Create `kernel/src/boot.rs`**
 
 ```rust
 //! Boot entry: the first instructions our kernel ever runs.
@@ -462,7 +462,7 @@ _start:
 );
 ```
 
-- [ ] **Step 4: Create `kernel/src/main.rs`**
+- [x] **Step 4: Create `kernel/src/main.rs`**
 
 ```rust
 //! Kernel entry point.
@@ -521,7 +521,7 @@ fn main() {
 }
 ```
 
-- [ ] **Step 5: Add the arch dependency to `kernel/Cargo.toml`**
+- [x] **Step 5: Add the arch dependency to `kernel/Cargo.toml`**
 
 Replace the `[dependencies]` section with:
 
@@ -531,7 +531,7 @@ kernel-common = { path = "../libs/common" }
 kernel-arch-riscv64 = { path = "../arch/riscv64" }
 ```
 
-- [ ] **Step 6: Update `.cargo/config.toml`**
+- [x] **Step 6: Update `.cargo/config.toml`**
 
 Replace the whole file with:
 
@@ -562,7 +562,7 @@ qemu = "run -p kernel --target riscv64gc-unknown-none-elf"
 runner = "qemu-system-riscv64 -machine virt -nographic -bios default -kernel"
 ```
 
-- [ ] **Step 7: Verify the host stays green**
+- [x] **Step 7: Verify the host stays green**
 
 Run:
 ```powershell
@@ -570,7 +570,7 @@ cargo build --workspace; cargo test --workspace
 ```
 Expected: build `Finished`, all tests pass. (The kernel binary builds as the host stub here.)
 
-- [ ] **Step 8: Run the boot smoke test — it must now PASS**
+- [x] **Step 8: Run the boot smoke test — it must now PASS**
 
 Run:
 ```powershell
@@ -580,7 +580,7 @@ Expected: `BOOT TEST PASS: kernel printed 'hello world'.` and `exit=0`.
 
 If it fails, debug systematically (superpowers:systematic-debugging); typical causes: linker script not applied (check `build.rs` ran — `cargo build -p kernel --target riscv64gc-unknown-none-elf -v` shows the `-T` arg), or QEMU not on PATH.
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```powershell
 git add kernel .cargo/config.toml
@@ -598,7 +598,7 @@ git commit -m "feat: boot a freestanding no_std kernel under QEMU and print hell
 - Modify: `tools/run-qemu.ps1`
 - Modify: `tools/README.md`
 
-- [ ] **Step 1: Replace `tools/build.ps1`**
+- [x] **Step 1: Replace `tools/build.ps1`**
 
 ```powershell
 # Builds the workspace (host) and cross-builds the kernel (riscv64).
@@ -613,7 +613,7 @@ cargo build --manifest-path "$repo/Cargo.toml" -p kernel --target riscv64gc-unkn
 Write-Host "Build + tests OK." -ForegroundColor Green
 ```
 
-- [ ] **Step 2: Replace `tools/run-qemu.ps1`**
+- [x] **Step 2: Replace `tools/run-qemu.ps1`**
 
 ```powershell
 # Boots OUR kernel under QEMU (riscv64 `virt` machine, OpenSBI firmware).
@@ -629,7 +629,7 @@ qemu-system-riscv64 -machine virt -nographic -bios default `
     -kernel "$repo/target/riscv64gc-unknown-none-elf/debug/kernel"
 ```
 
-- [ ] **Step 3: Update `tools/README.md`**
+- [x] **Step 3: Update `tools/README.md`**
 
 Update it to describe (keep the existing folder-purpose intro):
 - `build.ps1` — host build + tests, then riscv64 cross-build of the kernel.
@@ -638,7 +638,7 @@ Update it to describe (keep the existing folder-purpose intro):
 - `check-references.ps1` — keep its existing description unchanged.
 - The `cargo qemu` alias as the one-liner equivalent of `run-qemu.ps1`.
 
-- [ ] **Step 4: Verify both scripts**
+- [x] **Step 4: Verify both scripts**
 
 Run:
 ```powershell
@@ -653,7 +653,7 @@ hello world from Kernel (working title) - Phase 1 (hart 0)
 (kernel is idle; exit QEMU with Ctrl-A then X)
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add tools/build.ps1 tools/run-qemu.ps1 tools/README.md
@@ -673,7 +673,7 @@ git commit -m "chore(tools): build script cross-builds kernel; run-qemu boots ou
 - Modify: `docs/glossary.md`
 - Modify: `CONTRIBUTING.md` (only if it lists build/run commands)
 
-- [ ] **Step 1: Correct the `rust-toolchain.toml` comment**
+- [x] **Step 1: Correct the `rust-toolchain.toml` comment**
 
 Replace the comment block (keep the `[toolchain]` table unchanged):
 
@@ -686,7 +686,7 @@ Replace the comment block (keep the `[toolchain]` table unchanged):
 # suffices. See docs/learning/0002-boot-and-hello-world.md.
 ```
 
-- [ ] **Step 2: Update `README.md`**
+- [x] **Step 2: Update `README.md`**
 
 - Status line: replace the Phase 0 status with: **"Phase 1 — hello world. Our own freestanding kernel boots under QEMU/riscv64 and prints `hello world` via the SBI console. Phase 0 (foundation docs + toolchain) is complete."**
 - Getting started: keep prerequisites; commands become:
@@ -695,12 +695,12 @@ Replace the comment block (keep the `[toolchain]` table unchanged):
   - `./tools/test-qemu.ps1` — automated boot check
 - Repository layout: adjust the `kernel/` line to say "the microkernel — freestanding `no_std` binary (boots in Phase 1)".
 
-- [ ] **Step 3: Update `docs/roadmap/roadmap.md`**
+- [x] **Step 3: Update `docs/roadmap/roadmap.md`**
 
 - Phase 0 heading: change `*(in progress)*` to `*(done — 2026-06-08)*` (use the date of the Phase 0 completion commit `1b4bdf7`, retrievable via `git log -1 --format=%as 1b4bdf7`).
 - Phase 1 heading: append `*(done — 2026-06-09)*` and update the "You learn" line to: "the boot process, freestanding Rust, linker scripts, SBI calls (and why `build-std` wasn't needed yet — see learning note 0002)."
 
-- [ ] **Step 4: Create `docs/learning/0002-boot-and-hello-world.md`**
+- [x] **Step 4: Create `docs/learning/0002-boot-and-hello-world.md`**
 
 Content (write as flowing beginner-friendly prose, ~1 page, covering exactly these points):
 1. **The boot chain:** QEMU `virt` machine powers on → OpenSBI firmware (M-mode, machine mode — most privileged) initializes hardware and prints its banner → jumps to our ELF entry `_start` at `0x80200000` in S-mode (supervisor mode — where kernels live), passing hart id in `a0` and a device-tree pointer in `a1`. "hart" = hardware thread, RISC-V's word for a CPU core.
@@ -712,7 +712,7 @@ Content (write as flowing beginner-friendly prose, ~1 page, covering exactly the
 
 Also add a link line for note 0002 in `docs/learning/README.md`.
 
-- [ ] **Step 5: Add new terms to `docs/glossary.md`**
+- [x] **Step 5: Add new terms to `docs/glossary.md`**
 
 Check which of these are missing (`Select-String -Path docs/glossary.md -Pattern "SBI","ecall","hart","S-mode","M-mode","linker script","wfi"`) and add the missing ones, one or two sentences each, in the file's existing alphabetical/format style:
 - **SBI (Supervisor Binary Interface):** the standard interface a RISC-V kernel (S-mode) uses to request services from firmware (M-mode), e.g. "print this byte". OpenSBI implements it.
@@ -722,11 +722,11 @@ Check which of these are missing (`Select-String -Path docs/glossary.md -Pattern
 - **linker script:** instructions to the linker about where in memory each part of a binary must be placed; essential on bare metal where addresses are physical and fixed.
 - **wfi (wait for interrupt):** RISC-V instruction that sleeps the hart until an interrupt arrives; our idle loop.
 
-- [ ] **Step 6: Check `CONTRIBUTING.md`**
+- [x] **Step 6: Check `CONTRIBUTING.md`**
 
 Run `Select-String -Path CONTRIBUTING.md -Pattern "build.ps1","run-qemu","cargo"`. If it lists build/run commands, add `./tools/test-qemu.ps1` next to them and ensure nothing still says "firmware only". If it only links to other docs, no change needed.
 
-- [ ] **Step 7: Verify cross-references**
+- [x] **Step 7: Verify cross-references**
 
 Run:
 ```powershell
@@ -734,7 +734,7 @@ Run:
 ```
 Expected: no broken references reported (the new learning-note path is referenced from rust-toolchain.toml, .cargo/config.toml, roadmap, and learning README — all must resolve).
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```powershell
 git add rust-toolchain.toml README.md docs CONTRIBUTING.md
@@ -745,7 +745,7 @@ git commit -m "docs: update for Phase 1 (boot learning note, roadmap, README, gl
 
 ## Task 7: Final acceptance & push
 
-- [ ] **Step 1: Full clean-ish rebuild + all tests**
+- [x] **Step 1: Full clean-ish rebuild + all tests**
 
 Run:
 ```powershell
@@ -755,11 +755,11 @@ cargo lint
 ```
 Expected: "Build + tests OK."; "BOOT TEST PASS"; `exit=0`; clippy finishes with no errors (warnings acceptable but fix what's trivial).
 
-- [ ] **Step 2: Acceptance against the roadmap "done" signal**
+- [x] **Step 2: Acceptance against the roadmap "done" signal**
 
 `docs/roadmap/roadmap.md` Phase 1: "Done when: `./tools/run-qemu.ps1` loads our kernel and it prints 'hello world'." — confirmed in Task 5 Step 4 (interactive) and continuously by `test-qemu.ps1`.
 
-- [ ] **Step 3: Clean tree and push**
+- [x] **Step 3: Clean tree and push**
 
 Run:
 ```powershell
@@ -769,7 +769,7 @@ git push
 ```
 Expected: clean tree; the Phase 1 commit sequence; push succeeds to `origin/main`.
 
-- [ ] **Step 4: Knowledge-base check**
+- [x] **Step 4: Knowledge-base check**
 
 If any real issue was hit and fixed during execution (toolchain, QEMU flags, linker errors...), record it as the next `knowledge-base/entries/KB-000N.md` per `knowledge-base/schema/issue-record.md` and commit it (`docs: record KB-000N (<short title>)`). If nothing went wrong, skip — do not invent entries.
 
