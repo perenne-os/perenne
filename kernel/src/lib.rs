@@ -1,22 +1,22 @@
+#![cfg_attr(not(test), no_std)]
 //! The microkernel (working title).
 //!
-//! Phase 0 placeholder that compiles on the host. In Phase 1 this becomes
-//! a `no_std` freestanding binary that boots under QEMU on riscv64 and
-//! prints "hello world". For now it only exposes the project name.
+//! Phase 1: the package's binary (`src/main.rs`) is a freestanding
+//! `no_std` kernel that boots under QEMU on riscv64 and prints a
+//! greeting. This library holds the host-testable parts.
 
-use kernel_common::PROJECT_NAME;
-
-/// Returns a startup banner string. Real boot code arrives in Phase 1.
-pub fn banner() -> String {
-    format!("{PROJECT_NAME} — Phase 0 foundation")
-}
+/// The greeting the kernel prints at boot — the Phase 1 milestone
+/// ("Done when: ./tools/run-qemu.ps1 loads our kernel and it prints
+/// 'hello world'", docs/roadmap/roadmap.md). The boot smoke test
+/// (tools/test-qemu.ps1) greps the serial log for exactly this string.
+pub const GREETING: &str = "hello world";
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn banner_mentions_project() {
-        assert!(banner().contains("working title"));
+    fn greeting_is_hello_world() {
+        assert_eq!(GREETING, "hello world");
     }
 }

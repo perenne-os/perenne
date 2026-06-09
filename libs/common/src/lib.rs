@@ -1,7 +1,10 @@
+#![cfg_attr(not(test), no_std)]
 //! Shared types and utilities used across the Kernel project.
 //!
-//! Phase 0 placeholder. Real shared types (capabilities, error types,
-//! IDs) arrive in later phases.
+//! `no_std`: this crate is used by the freestanding kernel, so it cannot
+//! assume an operating system underneath (std is re-enabled for host
+//! unit tests only). Real shared types (capabilities, error types, IDs)
+//! arrive in later phases.
 
 /// Returns the provisional project name.
 ///
