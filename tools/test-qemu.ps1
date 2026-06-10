@@ -30,13 +30,13 @@ $qemu = Start-Process qemu-system-riscv64 -PassThru -NoNewWindow -ArgumentList @
     "-bios", "default",
     "-kernel", $kernelElf
 )
-# Every pattern must appear in one boot. "tick: 2" implies >= 2 ticks
-# because the tick counter is monotonic.
+# Every pattern must appear in one boot. Patterns are regexes: "tick: 2(?!\d)"
+# uses a negative lookahead to prevent matching "tick: 20" or "tick: 21" (>=2 ticks).
 $mustMatch = @(
     "hello world",
     "trap: breakpoint",
     "survived breakpoint",
-    "tick: 2"
+    "tick: 2(?!\d)"
 )
 $missing = $mustMatch
 try {
@@ -44,7 +44,7 @@ try {
     while ((Get-Date) -lt $deadline) {
         Start-Sleep -Milliseconds 500
         $text = Read-LogText $serialLog
-        $missing = @($mustMatch | Where-Object { $text -notmatch [regex]::Escape($_) })
+        $missing = @($mustMatch | Where-Object { $text -notmatch $_ })
         if ($missing.Count -eq 0) { break }
     }
 }
