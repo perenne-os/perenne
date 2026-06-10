@@ -1,6 +1,7 @@
 # Boot smoke test: cross-builds the kernel, boots it headless under QEMU
-# (riscv64 virt + OpenSBI), captures the serial console to a temp file,
-# and asserts the Phase 1 greeting ("hello world") appears.
+# (riscv64 virt + OpenSBI), captures the serial console, and asserts the
+# Phase 2a milestones: the greeting, a caught-and-survived breakpoint
+# exception, and at least two timer-heartbeat ticks.
 # Usage: ./tools/test-qemu.ps1     (exit code 0 = pass, 1 = fail)
 $ErrorActionPreference = "Stop"
 $repo = Split-Path -Parent $PSScriptRoot
@@ -29,23 +30,33 @@ $qemu = Start-Process qemu-system-riscv64 -PassThru -NoNewWindow -ArgumentList @
     "-bios", "default",
     "-kernel", $kernelElf
 )
-$found = $false
+# Every pattern must appear in one boot. "tick: 2" implies >= 2 ticks
+# because the tick counter is monotonic.
+$mustMatch = @(
+    "hello world",
+    "trap: breakpoint",
+    "survived breakpoint",
+    "tick: 2"
+)
+$missing = $mustMatch
 try {
     $deadline = (Get-Date).AddSeconds(30)
     while ((Get-Date) -lt $deadline) {
         Start-Sleep -Milliseconds 500
-        if ((Read-LogText $serialLog) -match "hello world") { $found = $true; break }
+        $text = Read-LogText $serialLog
+        $missing = @($mustMatch | Where-Object { $text -notmatch [regex]::Escape($_) })
+        if ($missing.Count -eq 0) { break }
     }
 }
 finally {
     if (-not $qemu.HasExited) { Stop-Process -Id $qemu.Id -Force }
 }
 
-if ($found) {
-    Write-Host "BOOT TEST PASS: kernel printed 'hello world'." -ForegroundColor Green
+if ($missing.Count -eq 0) {
+    Write-Host "BOOT TEST PASS: greeting, breakpoint recovery, and heartbeat all observed." -ForegroundColor Green
     exit 0
 } else {
-    Write-Host "BOOT TEST FAIL: greeting not found within 30s. Serial output:" -ForegroundColor Red
+    Write-Host "BOOT TEST FAIL: missing within 30s: $($missing -join ', '). Serial output:" -ForegroundColor Red
     Read-LogText $serialLog | Write-Host
     exit 1
 }
