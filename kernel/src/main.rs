@@ -18,7 +18,7 @@ mod bare {
     use core::panic::PanicInfo;
 
     use kernel::GREETING;
-    use kernel_arch_riscv64::{println, trap};
+    use kernel_arch_riscv64::{println, timer, trap};
     use kernel_common::PROJECT_NAME;
 
     /// Rust entry, called from the boot assembly with the arguments
@@ -35,12 +35,13 @@ mod bare {
         unsafe { core::arch::asm!("ebreak") };
         println!("survived breakpoint");
 
-        println!("(kernel is idle; exit QEMU with Ctrl-A then X)");
+        timer::start();
+        println!("(kernel idles; heartbeat ~1/s; exit QEMU with Ctrl-A then X)");
         park()
     }
 
-    /// Halt this hart forever: `wfi` sleeps until an interrupt, the loop
-    /// goes back to sleep if one arrives (none are enabled yet).
+    /// Halt this hart: `wfi` sleeps until an interrupt; the trap handler
+    /// runs on each timer tick, then the loop goes back to sleep.
     fn park() -> ! {
         loop {
             unsafe { core::arch::asm!("wfi") };

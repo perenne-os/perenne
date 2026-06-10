@@ -257,11 +257,7 @@ extern "C" fn trap_handler(frame: &mut TrapFrame) {
             // would re-execute it forever.
             frame.sepc += instruction_len_at(frame.sepc);
         }
-        Cause::SupervisorTimer => {
-            // Wired to the timer in the next task; interrupts are not
-            // enabled yet, so this is unreachable today.
-            panic!("timer interrupt before timer support exists");
-        }
+        Cause::SupervisorTimer => crate::timer::on_tick(),
         Cause::Unknown { interrupt, code } => {
             crate::println!(
                 "FATAL TRAP: interrupt={interrupt} code={code} sepc={:#x} stval={:#x}",
