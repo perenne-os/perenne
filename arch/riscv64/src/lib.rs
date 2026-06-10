@@ -10,6 +10,8 @@
 #[cfg(target_arch = "riscv64")]
 pub mod console;
 #[cfg(target_arch = "riscv64")]
+pub mod csr;
+#[cfg(target_arch = "riscv64")]
 pub mod sbi;
 
 /// Trap handling: pure decoding logic (no asm, host-testable); the gated parts (entry, dispatcher, init) live inside.
