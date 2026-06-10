@@ -236,13 +236,17 @@ pub fn init() {
 #[cfg(target_arch = "riscv64")]
 fn instruction_len_at(addr: usize) -> usize {
     // SAFETY: addr is the sepc of a just-executed instruction, so it
-    // points at readable, identity-mapped kernel code (no paging yet).
+    // points at readable, physically-addressed kernel code (no paging yet).
     let parcel = unsafe { core::ptr::read_volatile(addr as *const u16) };
     instruction_len(parcel)
 }
 
 /// Rust side of every trap; called by the entry assembly with the saved
 /// frame. Returning resumes at `frame.sepc` via `sret`.
+///
+/// The entry assembly guarantees `a0` points at a fully-initialized, uniquely-owned
+/// `TrapFrame` on the current stack — that is what makes the `&mut` reference sound.
+/// Phase 2c's context switch must preserve this invariant.
 #[cfg(target_arch = "riscv64")]
 #[no_mangle]
 extern "C" fn trap_handler(frame: &mut TrapFrame) {
