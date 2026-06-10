@@ -20,6 +20,7 @@ pub fn console_putchar(c: u8) {
             in("a7") 0x01usize,
             inout("a0") c as usize => _, // a0 carries the argument in and the SBI return value out
             out("a1") _,
+            options(nostack),
         );
     }
 }
@@ -40,6 +41,7 @@ pub fn set_timer(stime_value: u64) {
             in("a6") 0usize,
             inout("a0") stime_value as usize => _, // in: deadline; out: SBI error code (ignored)
             out("a1") _,
+            options(nostack),
         );
     }
 }

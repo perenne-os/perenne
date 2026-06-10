@@ -12,7 +12,7 @@ use core::arch::asm;
 #[inline]
 pub fn time() -> u64 {
     let value: u64;
-    unsafe { asm!("csrr {}, time", out(reg) value) };
+    unsafe { asm!("csrr {}, time", out(reg) value, options(nostack, nomem)) };
     value
 }
 
@@ -27,16 +27,19 @@ pub fn time() -> u64 {
 /// trap into a wild jump.
 #[inline]
 pub unsafe fn stvec_write(addr: usize) {
-    unsafe { asm!("csrw stvec, {}", in(reg) addr) };
+    unsafe { asm!("csrw stvec, {}", in(reg) addr, options(nostack, nomem)) };
 }
 
 /// Enable supervisor timer interrupts (`sie.STIE`, bit 5).
 ///
 /// # Safety
 /// A trap handler must be installed via [`stvec_write`] first.
+///
+/// We use `csrs` (register form) instead of `csrsi` because bit 5 = 32
+/// exceeds `csrsi`'s 5-bit immediate range (0–31).
 #[inline]
 pub unsafe fn sie_enable_timer() {
-    unsafe { asm!("csrs sie, {}", in(reg) 1usize << 5) };
+    unsafe { asm!("csrs sie, {}", in(reg) 1usize << 5, options(nostack, nomem)) };
 }
 
 /// Globally enable supervisor interrupts (`sstatus.SIE`, bit 1).
@@ -45,5 +48,5 @@ pub unsafe fn sie_enable_timer() {
 /// A trap handler must be installed via [`stvec_write`] first.
 #[inline]
 pub unsafe fn sstatus_enable_interrupts() {
-    unsafe { asm!("csrsi sstatus, 0x2") };
+    unsafe { asm!("csrsi sstatus, 0x2", options(nostack, nomem)) };
 }
