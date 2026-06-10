@@ -124,3 +124,147 @@ mod tests {
         assert_eq!(core::mem::size_of::<TrapFrame>(), 280);
     }
 }
+
+// The assembly trap entry. Layout contract: see [`TrapFrame`].
+// 288 = size_of::<TrapFrame>() (280) rounded up to keep `sp` 16-aligned
+// per the RISC-V ABI. `t0` (= x5) is used as scratch only *after* its
+// slot is saved, and on the way out only *before* its slot is restored.
+// `x2` (sp) is restored last — that load releases the frame.
+#[cfg(target_arch = "riscv64")]
+core::arch::global_asm!(
+    r#"
+    .section .text
+    .align 2                # stvec requires 4-byte alignment (mode bits = 00, direct)
+    .global __trap_entry
+__trap_entry:
+    addi sp, sp, -288
+    sd x1,  0(sp)
+    sd x3,  16(sp)
+    sd x4,  24(sp)
+    sd x5,  32(sp)
+    sd x6,  40(sp)
+    sd x7,  48(sp)
+    sd x8,  56(sp)
+    sd x9,  64(sp)
+    sd x10, 72(sp)
+    sd x11, 80(sp)
+    sd x12, 88(sp)
+    sd x13, 96(sp)
+    sd x14, 104(sp)
+    sd x15, 112(sp)
+    sd x16, 120(sp)
+    sd x17, 128(sp)
+    sd x18, 136(sp)
+    sd x19, 144(sp)
+    sd x20, 152(sp)
+    sd x21, 160(sp)
+    sd x22, 168(sp)
+    sd x23, 176(sp)
+    sd x24, 184(sp)
+    sd x25, 192(sp)
+    sd x26, 200(sp)
+    sd x27, 208(sp)
+    sd x28, 216(sp)
+    sd x29, 224(sp)
+    sd x30, 232(sp)
+    sd x31, 240(sp)
+    addi t0, sp, 288        # reconstruct the pre-trap sp (x2)
+    sd t0, 8(sp)
+    csrr t0, sepc
+    sd t0, 248(sp)
+    csrr t0, sstatus
+    sd t0, 256(sp)
+    csrr t0, scause
+    sd t0, 264(sp)
+    csrr t0, stval
+    sd t0, 272(sp)
+    mv a0, sp               # &mut TrapFrame
+    call trap_handler
+    ld t0, 248(sp)          # handler may have advanced sepc
+    csrw sepc, t0
+    ld t0, 256(sp)
+    csrw sstatus, t0
+    ld x1,  0(sp)
+    ld x3,  16(sp)
+    ld x4,  24(sp)
+    ld x5,  32(sp)
+    ld x6,  40(sp)
+    ld x7,  48(sp)
+    ld x8,  56(sp)
+    ld x9,  64(sp)
+    ld x10, 72(sp)
+    ld x11, 80(sp)
+    ld x12, 88(sp)
+    ld x13, 96(sp)
+    ld x14, 104(sp)
+    ld x15, 112(sp)
+    ld x16, 120(sp)
+    ld x17, 128(sp)
+    ld x18, 136(sp)
+    ld x19, 144(sp)
+    ld x20, 152(sp)
+    ld x21, 160(sp)
+    ld x22, 168(sp)
+    ld x23, 176(sp)
+    ld x24, 184(sp)
+    ld x25, 192(sp)
+    ld x26, 200(sp)
+    ld x27, 208(sp)
+    ld x28, 216(sp)
+    ld x29, 224(sp)
+    ld x30, 232(sp)
+    ld x31, 240(sp)
+    ld x2,  8(sp)           # restore original sp LAST; frame is gone
+    sret
+"#
+);
+
+/// Install [`__trap_entry`] as the trap vector (direct mode). Call once,
+/// early in kmain, before anything can fault and before interrupts are
+/// enabled.
+#[cfg(target_arch = "riscv64")]
+pub fn init() {
+    extern "C" {
+        fn __trap_entry();
+    }
+    // SAFETY: __trap_entry is the real entry defined above; .align 2
+    // gives the required 4-byte alignment.
+    unsafe { crate::csr::stvec_write(__trap_entry as *const () as usize) };
+}
+
+/// Length of the instruction at `addr`, for advancing `sepc` past it.
+#[cfg(target_arch = "riscv64")]
+fn instruction_len_at(addr: usize) -> usize {
+    // SAFETY: addr is the sepc of a just-executed instruction, so it
+    // points at readable, identity-mapped kernel code (no paging yet).
+    let parcel = unsafe { core::ptr::read_volatile(addr as *const u16) };
+    instruction_len(parcel)
+}
+
+/// Rust side of every trap; called by the entry assembly with the saved
+/// frame. Returning resumes at `frame.sepc` via `sret`.
+#[cfg(target_arch = "riscv64")]
+#[no_mangle]
+extern "C" fn trap_handler(frame: &mut TrapFrame) {
+    match decode(frame.scause) {
+        Cause::Breakpoint => {
+            crate::println!("trap: breakpoint at {:#x}", frame.sepc);
+            // ebreak doesn't advance the PC itself; without this, sret
+            // would re-execute it forever.
+            frame.sepc += instruction_len_at(frame.sepc);
+        }
+        Cause::SupervisorTimer => {
+            // Wired to the timer in the next task; interrupts are not
+            // enabled yet, so this is unreachable today.
+            panic!("timer interrupt before timer support exists");
+        }
+        Cause::Unknown { interrupt, code } => {
+            crate::println!(
+                "FATAL TRAP: interrupt={interrupt} code={code} sepc={:#x} stval={:#x}",
+                frame.sepc, frame.stval
+            );
+            crate::println!("{frame:#x?}");
+            panic!("unhandled trap");
+        }
+    }
+}

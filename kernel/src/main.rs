@@ -18,7 +18,7 @@ mod bare {
     use core::panic::PanicInfo;
 
     use kernel::GREETING;
-    use kernel_arch_riscv64::println;
+    use kernel_arch_riscv64::{println, trap};
     use kernel_common::PROJECT_NAME;
 
     /// Rust entry, called from the boot assembly with the arguments
@@ -26,7 +26,15 @@ mod bare {
     #[no_mangle]
     extern "C" fn kmain(hartid: usize, _dtb: usize) -> ! {
         println!();
-        println!("{GREETING} from {PROJECT_NAME} - Phase 1 (hart {hartid})");
+        println!("{GREETING} from {PROJECT_NAME} - Phase 2a (hart {hartid})");
+
+        trap::init();
+        // Deliberate breakpoint: proves the handler catches an exception
+        // and execution RESUMES past it (the smoke test's
+        // "survived breakpoint" line can only print if recovery worked).
+        unsafe { core::arch::asm!("ebreak") };
+        println!("survived breakpoint");
+
         println!("(kernel is idle; exit QEMU with Ctrl-A then X)");
         park()
     }
