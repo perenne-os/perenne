@@ -16,9 +16,25 @@ A living document. Think in **years, not months** — each phase is small, real,
 
 ## Phase 2 — The kernel grows up
 
-- **Goal:** memory management, interrupt/trap handling, and basic scheduling — still in QEMU.
-- **You learn:** virtual memory, traps, context switching.
-- **Done when:** the kernel can manage memory and switch between simple tasks.
+Decomposed into three sub-phases (2026-06-10), each with its own design → plan → build cycle. Traps come first because timer interrupts (2c) and page faults (2b) both need the handler infrastructure.
+
+### Phase 2a — Trap handling & timer heartbeat  *(done — 2026-06-10)*
+
+- **Goal:** a supervisor trap handler that catches and recovers from exceptions, plus SBI timer interrupts producing a ~1 Hz heartbeat.
+- **You learn:** the trap CSRs (`stvec`, `scause`, `sepc`, …), trap entry/exit and context saving, the SBI TIME extension ([learning note 0003](../learning/0003-traps-and-interrupts.md)).
+- **Done when:** `./tools/test-qemu.ps1` sees a survived breakpoint and ≥ 2 timer ticks in one boot.
+
+### Phase 2b — Memory management
+
+- **Goal:** physical frame allocation and virtual memory (paging) — the kernel manages its own address space.
+- **You learn:** physical vs. virtual addresses, page tables, the MMU.
+- **Done when:** the kernel runs with paging enabled and can allocate/free frames.
+
+### Phase 2c — Basic scheduling
+
+- **Goal:** context switching between simple in-kernel tasks, driven by the timer from 2a.
+- **You learn:** context switching, run queues, the tick-policy hook.
+- **Done when:** the kernel switches between simple tasks (the original Phase 2 exit criterion).
 
 ## Phase 3 — Security spine
 

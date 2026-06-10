@@ -12,3 +12,4 @@ This folder holds the author's learning notes as systems-programming concepts cl
 
 - [0001 — Development environment](0001-dev-environment.md)
 - [0002 — Boot and "hello world" (Phase 1)](0002-boot-and-hello-world.md)
+- [0003 — Traps and the timer heartbeat (Phase 2a)](0003-traps-and-interrupts.md)

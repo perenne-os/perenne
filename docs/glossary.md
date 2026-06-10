@@ -31,3 +31,11 @@ Plain-language definitions of terms used throughout these docs. Aimed at someone
 - **Self-healing / knowledge organism** — this project's support model: the OS keeps a growing memory of issues and proven fixes and consults itself to diagnose and repair problems.
 - **Safety cage** — the rule that every automated self-healing action must be capability-checked, logged, reversible, and auditable, so the healer can never gain unchecked power.
 - **Accelerator (GPU / NPU / TPU / QPU)** — a specialized coprocessor a normal CPU offloads work to (graphics, AI math, or quantum operations). Treated as a *device*, not something an OS runs on.
+- **Trap** — the CPU's "stop and handle this" mechanism: on an exceptional event the hart jumps to the kernel's registered handler. Exceptions and interrupts are the two flavors.
+- **Exception** — a synchronous trap caused by the current instruction itself (e.g. a breakpoint or an illegal instruction).
+- **Interrupt** — an asynchronous trap arriving from outside the instruction stream (e.g. the timer). The kernel handles it and resumes the interrupted code.
+- **CSR (Control and Status Register)** — special per-hart registers that configure and report CPU state, accessed with dedicated instructions (`csrr`/`csrw`). Trap handling lives in CSRs like `stvec` (handler address), `scause` (why), `sepc` (where), `stval` (extra detail).
+- **Trap frame** — the snapshot of every register saved on trap entry and restored on exit, so the interrupted code never notices. A saved frame is effectively a paused task — the seed of context switching.
+- **`sret`** — the return-from-trap instruction: restores the pre-trap privilege mode and jumps back to `sepc`.
+- **`ebreak`** — the RISC-V breakpoint instruction; Phase 2a triggers one on purpose to prove trap recovery works.
+- **Timebase** — the fixed rate the `time` counter ticks at (10 MHz on QEMU virt), independent of CPU clock speed; deadlines for timer interrupts are expressed in these ticks.
