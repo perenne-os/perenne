@@ -48,6 +48,7 @@ pub enum Cause {
 const INTERRUPT_BIT: usize = 1 << (usize::BITS - 1);
 
 /// Decode a raw `scause` value.
+/// Reads the interrupt bit (MSB) and strips it from the cause code before matching.
 pub fn decode(scause: usize) -> Cause {
     let interrupt = scause & INTERRUPT_BIT != 0;
     let code = scause & !INTERRUPT_BIT;
@@ -61,6 +62,9 @@ pub fn decode(scause: usize) -> Cause {
 /// Length in bytes of the instruction starting with this 16-bit parcel.
 /// RISC-V encoding rule: standard 4-byte instructions have the two low
 /// bits `11`; compressed (C-extension) 2-byte instructions do not.
+/// Sufficient for RV64GC: instructions are 2 or 4 bytes; longer encodings
+/// (reserved by the spec when more low bits are set) do not occur in the
+/// extensions we build for.
 pub fn instruction_len(parcel: u16) -> usize {
     if parcel & 0b11 == 0b11 { 4 } else { 2 }
 }
@@ -102,8 +106,14 @@ mod tests {
 
     #[test]
     fn compressed_ebreak_is_two_bytes() {
-        // c.ebreak = 0x9002; ends in 0b10.
+        // c.ebreak = 0x9002; anything NOT ending in 0b11 is compressed/2-byte.
         assert_eq!(instruction_len(0x9002), 2);
+    }
+
+    #[test]
+    fn low_bits_00_is_also_two_bytes() {
+        // Any parcel not ending in 0b11 is a compressed instruction.
+        assert_eq!(instruction_len(0x0000), 2);
     }
 
     #[test]
