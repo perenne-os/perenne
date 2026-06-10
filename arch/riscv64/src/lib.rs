@@ -12,6 +12,8 @@ pub mod console;
 #[cfg(target_arch = "riscv64")]
 pub mod sbi;
 
+pub mod trap;
+
 /// The architecture identifier this crate targets.
 pub const ARCH: &str = "riscv64";
 
