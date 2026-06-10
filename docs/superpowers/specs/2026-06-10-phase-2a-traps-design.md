@@ -109,9 +109,14 @@ host-runnable unit tests.
   diagnostic — every later phase benefits.
 - The existing panic handler (print + park) is sufficient; a panic inside the
   trap handler simply prints and parks like any other.
-- Recursion guard: traps are not re-enabled inside the handler, so a faulting
-  handler double-faults to OpenSBI rather than looping silently. Acceptable
-  at this stage; noted in the learning note.
+- Known limitation (captured for 2c): interrupts stay masked inside the
+  handler (`sstatus.SIE` is cleared on trap entry), but a *fault* raised by
+  the handler or panic path would re-enter `__trap_entry` and recurse — and
+  the single 64 KiB stack has no guard page, so deep recursion corrupts
+  memory silently instead of fault-stopping. Unreachable in 2a's single
+  deliberate `ebreak`; must be revisited before 2c enables preemption.
+  Printing from trap context is safe: `console_putchar`'s `ecall` traps to
+  M-mode (OpenSBI), not back into our S-mode vector.
 
 ## 4. Testing
 
