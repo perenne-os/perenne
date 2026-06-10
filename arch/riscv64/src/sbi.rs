@@ -39,7 +39,7 @@ pub fn set_timer(stime_value: u64) {
             "ecall",
             in("a7") 0x5449_4D45usize,
             in("a6") 0usize,
-            inout("a0") stime_value as usize => _, // in: deadline; out: SBI error code (ignored)
+            inout("a0") stime_value as usize => _, // in: deadline; out: SBI error code (ignored — TIME extension only fails on invalid params, which a u64 deadline can't produce)
             out("a1") _,
             options(nostack),
         );

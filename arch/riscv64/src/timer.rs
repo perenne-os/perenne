@@ -13,7 +13,7 @@ use crate::{csr, sbi};
 /// device tree instead.
 const TIMEBASE_HZ: u64 = 10_000_000;
 
-/// One heartbeat per second (in `time` ticks).
+/// One heartbeat per second (in `time` ticks, = 1 second at the 10 MHz timebase).
 const TICK_INTERVAL: u64 = TIMEBASE_HZ;
 
 /// Monotonic count of timer interrupts since boot.
@@ -35,12 +35,18 @@ pub fn start() {
 
 /// Called by the trap dispatcher on each supervisor timer interrupt.
 pub(crate) fn on_tick() {
-    let n = TICKS.fetch_add(1, Ordering::Relaxed) + 1;
+    let n = TICKS.fetch_add(1, Ordering::Relaxed) + 1; // Relaxed: single hart; no ordering between TICKS and other state needed.
     crate::println!("tick: {n}");
     arm_next();
 }
 
 /// Schedule the next interrupt one interval from now.
 fn arm_next() {
+    // Arm from *now* rather than from the previous deadline, so one slow
+    // tick does not cause the next to fire immediately. This accumulates
+    // handler latency as drift (~microseconds on QEMU); acceptable for a
+    // heartbeat. A real clock would use `prev_deadline + TICK_INTERVAL`.
+    // If the computed deadline is somehow already past, SBI fires the
+    // interrupt immediately — benign by contract.
     sbi::set_timer(csr::time() + TICK_INTERVAL);
 }
