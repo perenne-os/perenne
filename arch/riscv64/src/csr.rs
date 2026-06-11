@@ -56,7 +56,11 @@ pub const SATP_MODE_SV39: usize = 8 << 60;
 
 /// Point address translation at a root page table and switch it on:
 /// `value` = mode bits | root-table PPN (physical address >> 12).
-/// Fenced on both sides so no stale translations straddle the switch.
+/// The trailing `sfence.vma` makes the new root visible; the leading
+/// one only flushes translations from any *prior* satp regime (inert at
+/// first boot, cheap insurance on a re-load). Ordering of the caller's
+/// page-table stores vs. `csrw` needs no fence: same-hart stores are
+/// program-ordered, and omitting `nomem` stops compiler reordering.
 ///
 /// # Safety
 /// The table must identity-map every address the kernel touches —
