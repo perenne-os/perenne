@@ -8,6 +8,7 @@ use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 pub mod frame;
+pub mod paging;
 
 /// Interior mutability for a single-hart kernel: gives `&mut` access to
 /// a static without a real lock. `timer.rs` gets away with a bare
