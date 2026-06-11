@@ -107,7 +107,7 @@ allocator are immediately usable — no fault-and-map machinery needed.
   not an atomic — `timer.rs`'s `AtomicU64` trick doesn't transfer to a
   bitmap-plus-counters structure). Its safety argument: one hart, and trap
   context never allocates in 2b. The accessor documents that invariant and
-  debug-asserts against re-entry, so a future violation fails loudly.
+  asserts against re-entry, so a future violation fails loudly.
 
 ### 3.4 Paging (Sv39)
 
