@@ -50,3 +50,30 @@ pub unsafe fn sie_enable_timer() {
 pub unsafe fn sstatus_enable_interrupts() {
     unsafe { asm!("csrsi sstatus, 0x2", options(nostack, nomem)) };
 }
+
+/// `satp` mode field (bits 63:60) selecting Sv39 translation.
+pub const SATP_MODE_SV39: usize = 8 << 60;
+
+/// Point address translation at a root page table and switch it on:
+/// `value` = mode bits | root-table PPN (physical address >> 12).
+/// Fenced on both sides so no stale translations straddle the switch.
+///
+/// # Safety
+/// The table must identity-map every address the kernel touches —
+/// the code executing this function, its stack, and all statics —
+/// with correct permissions. Anything less turns the instruction
+/// after `csrw` into a page fault (or a silent wild fetch).
+// (No `nomem` on satp_write, unlike the other accessors: this changes how
+// all memory is addressed, and the compiler must not cache across it.)
+#[inline]
+pub unsafe fn satp_write(value: usize) {
+    unsafe {
+        asm!(
+            "sfence.vma",
+            "csrw satp, {}",
+            "sfence.vma",
+            in(reg) value,
+            options(nostack),
+        )
+    };
+}
