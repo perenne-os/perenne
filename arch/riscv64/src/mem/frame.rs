@@ -160,4 +160,30 @@ mod tests {
         let mut a = allocator();
         a.free(PhysFrame(0x8030_0008));
     }
+
+    #[test]
+    fn allocation_crosses_word_boundaries() {
+        let mut a = allocator();
+        let mut last = None;
+        for _ in 0..65 {
+            last = a.alloc();
+        }
+        // Frame index 64 is the first bit of the second bitmap word.
+        assert_eq!(last, Some(PhysFrame(0x8030_0000 + 64 * FRAME_SIZE)));
+    }
+
+    #[test]
+    fn partial_last_word_exhausts_exactly() {
+        let mut a = BitmapAllocator::new();
+        // 100 frames: one full bitmap word plus 36 bits of the next.
+        a.init(0x8030_0000, 0x8030_0000 + 100 * FRAME_SIZE);
+        for i in 0..100 {
+            assert!(a.alloc().is_some(), "alloc {i} should succeed");
+        }
+        assert_eq!(a.free_frames(), 0);
+        assert_eq!(a.alloc(), None);
+        let f = PhysFrame(0x8030_0000 + 99 * FRAME_SIZE);
+        a.free(f);
+        assert_eq!(a.alloc(), Some(f), "free after exhaustion restores a slot");
+    }
 }
