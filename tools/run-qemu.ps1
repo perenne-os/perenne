@@ -7,5 +7,5 @@ $repo = Split-Path -Parent $PSScriptRoot
 Write-Host "Cross-building the kernel (riscv64)..." -ForegroundColor Cyan
 cargo build --manifest-path "$repo/Cargo.toml" -p kernel --target riscv64gc-unknown-none-elf
 Write-Host "Booting under QEMU (exit with Ctrl-A then X)..." -ForegroundColor Cyan
-qemu-system-riscv64 -machine virt -nographic -bios default `
+qemu-system-riscv64 -machine virt -m 128M -nographic -bios default `
     -kernel "$repo/target/riscv64gc-unknown-none-elf/debug/kernel"

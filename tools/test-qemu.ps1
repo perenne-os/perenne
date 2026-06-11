@@ -1,7 +1,8 @@
 # Boot smoke test: cross-builds the kernel, boots it headless under QEMU
 # (riscv64 virt + OpenSBI), captures the serial console, and asserts the
-# Phase 2a milestones: the greeting, a caught-and-survived breakpoint
-# exception, and at least two timer-heartbeat ticks.
+# Phase 2a milestones (greeting, survived breakpoint, >= 2 timer ticks)
+# plus the Phase 2b milestones (Sv39 paging on, W^X blocking a rodata
+# write, a frame alloc/free round-trip).
 # Usage: ./tools/test-qemu.ps1     (exit code 0 = pass, 1 = fail)
 $ErrorActionPreference = "Stop"
 $repo = Split-Path -Parent $PSScriptRoot
@@ -25,6 +26,7 @@ function Read-LogText($path) {
 
 $qemu = Start-Process qemu-system-riscv64 -PassThru -NoNewWindow -ArgumentList @(
     "-machine", "virt",
+    "-m", "128M",
     "-display", "none",
     "-serial", "file:$serialLog",
     "-bios", "default",
@@ -36,6 +38,9 @@ $mustMatch = @(
     "hello world",
     "trap: breakpoint",
     "survived breakpoint",
+    "paging: sv39 on",
+    "wx: rodata write blocked",
+    "frames: alloc/free ok",
     "tick: 2(?!\d)"
 )
 $missing = $mustMatch
@@ -53,7 +58,7 @@ finally {
 }
 
 if ($missing.Count -eq 0) {
-    Write-Host "BOOT TEST PASS: greeting, breakpoint recovery, and heartbeat all observed." -ForegroundColor Green
+    Write-Host "BOOT TEST PASS: 2a milestones plus paging, W^X, and frame round-trip all observed." -ForegroundColor Green
     exit 0
 } else {
     Write-Host "BOOT TEST FAIL: missing within 30s: $($missing -join ', '). Serial output:" -ForegroundColor Red
