@@ -2,8 +2,8 @@
  *
  * OpenSBI (-bios default) occupies RAM from 0x80000000 and jumps to our
  * ELF entry point in S-mode; supervisor software conventionally starts
- * at 0x80200000. We link everything at that address (no virtual memory
- * yet — that is Phase 2).
+ * at 0x80200000. We link everything at that address; Phase 2b identity-maps
+ * exactly these sections, so their boundaries must be 4 KiB-aligned.
  */
 OUTPUT_ARCH(riscv)
 ENTRY(_start)
@@ -14,16 +14,26 @@ SECTIONS
 {
     . = BASE_ADDRESS;
 
+    /* Section start/end symbols feed mem::init()'s W^X mapping:
+     * .text R-X, .rodata R--, .data+.bss RW-, stack RW-. Each region
+     * is 4 KiB-aligned because permissions are per-page. */
+    __text_start = .;
     .text : {
         *(.text.boot)            /* _start must be the first code */
         *(.text .text.*)
     }
+    . = ALIGN(4K);
+    __text_end = .;
 
+    __rodata_start = .;
     .rodata : {
         *(.rodata .rodata.*)
         *(.srodata .srodata.*)
     }
+    . = ALIGN(4K);
+    __rodata_end = .;
 
+    __data_start = .;
     .data : {
         *(.data .data.*)
         *(.sdata .sdata.*)
@@ -37,12 +47,21 @@ SECTIONS
         . = ALIGN(8);
         __bss_end = .;
     }
+    . = ALIGN(4K);
+    __data_end = .;              /* .data and .bss map as one RW region */
 
-    /* Boot stack for the single hart we run in Phase 1. */
-    .stack (NOLOAD) : ALIGN(16) {
+    /* 4 KiB guard page below the stack. mem::init() leaves it unmapped,
+     * so a stack overflow store-faults instead of silently corrupting
+     * .bss (2a's documented limitation). */
+    . += 4K;
+
+    /* Boot stack for the single hart we run. */
+    .stack (NOLOAD) : {
+        __stack_start = .;
         . += 64K;
         __stack_top = .;
     }
+    __kernel_end = .;            /* frame allocator manages from here */
 
     /DISCARD/ : {
         *(.eh_frame .eh_frame_hdr)
