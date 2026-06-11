@@ -19,6 +19,9 @@ pub mod timer;
 /// Trap handling: pure decoding logic (no asm, host-testable); the gated parts (entry, dispatcher, init) live inside.
 pub mod trap;
 
+/// Memory management: bitmap frame allocator and Sv39 paging. Pure logic (bitmap and PTE math, host-testable); the gated parts (statics, page-table walker, satp) live inside.
+pub mod mem;
+
 /// The architecture identifier this crate targets.
 pub const ARCH: &str = "riscv64";
 
