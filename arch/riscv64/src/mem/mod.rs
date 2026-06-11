@@ -31,6 +31,10 @@ impl<T> SingleHartCell<T> {
     }
 
     /// Run `f` with exclusive access to the value.
+    ///
+    /// If `f` panics the cell stays locked and every later call panics
+    /// as "re-entrant" — acceptable because a kernel panic is already
+    /// fatal (abort, no unwinding), so the stuck flag is unreachable.
     pub fn with<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
         assert!(
             !self.in_use.swap(true, Ordering::Acquire),
