@@ -32,7 +32,7 @@ pub struct TrapFrame {
     pub stval: usize,
 }
 
-/// Decoded `scause`. Only the causes Phase 2a handles get variants;
+/// Decoded `scause`. Only the causes Phases 2a/2b handles get variants;
 /// everything else is `Unknown` and treated as fatal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Cause {
@@ -40,6 +40,13 @@ pub enum Cause {
     Breakpoint,
     /// Supervisor timer interrupt (interrupt code 5).
     SupervisorTimer,
+    /// Instruction fetch from an unmapped/non-executable page (code 12).
+    InstructionPageFault,
+    /// Load from an unmapped/unreadable page (code 13).
+    LoadPageFault,
+    /// Store to an unmapped/unwritable page (code 15) — what the W^X
+    /// probe deliberately triggers.
+    StorePageFault,
     /// Anything we don't handle yet.
     Unknown { interrupt: bool, code: usize },
 }
@@ -55,6 +62,9 @@ pub fn decode(scause: usize) -> Cause {
     match (interrupt, code) {
         (false, 3) => Cause::Breakpoint,
         (true, 5) => Cause::SupervisorTimer,
+        (false, 12) => Cause::InstructionPageFault,
+        (false, 13) => Cause::LoadPageFault,
+        (false, 15) => Cause::StorePageFault,
         _ => Cause::Unknown { interrupt, code },
     }
 }
@@ -122,6 +132,22 @@ mod tests {
         // and stores stval at offset 272. If this changes, trap.rs's
         // assembly (added later) must change with it.
         assert_eq!(core::mem::size_of::<TrapFrame>(), 280);
+    }
+
+    #[test]
+    fn decodes_page_faults() {
+        assert_eq!(decode(12), Cause::InstructionPageFault);
+        assert_eq!(decode(13), Cause::LoadPageFault);
+        assert_eq!(decode(15), Cause::StorePageFault);
+    }
+
+    #[test]
+    fn page_fault_codes_as_interrupts_stay_unknown() {
+        // Interrupt bit + code 13 is NOT a load page fault.
+        assert_eq!(
+            decode(INTERRUPT_BIT | 13),
+            Cause::Unknown { interrupt: true, code: 13 }
+        );
     }
 }
 
@@ -241,6 +267,18 @@ fn instruction_len_at(addr: usize) -> usize {
     instruction_len(parcel)
 }
 
+/// Unrecoverable trap: print everything we know, then panic. `stval`
+/// holds the faulting address for page faults.
+#[cfg(target_arch = "riscv64")]
+fn fatal(kind: &str, frame: &TrapFrame) -> ! {
+    crate::println!(
+        "FATAL TRAP ({kind}): sepc={:#x} stval={:#x}",
+        frame.sepc, frame.stval
+    );
+    crate::println!("{frame:#x?}");
+    panic!("unhandled trap");
+}
+
 /// Rust side of every trap; called by the entry assembly with the saved
 /// frame. Returning resumes at `frame.sepc` via `sret`.
 ///
@@ -258,13 +296,12 @@ extern "C" fn trap_handler(frame: &mut TrapFrame) {
             frame.sepc += instruction_len_at(frame.sepc);
         }
         Cause::SupervisorTimer => crate::timer::on_tick(),
+        Cause::InstructionPageFault => fatal("instruction page fault", frame),
+        Cause::LoadPageFault => fatal("load page fault", frame),
+        Cause::StorePageFault => fatal("store page fault", frame),
         Cause::Unknown { interrupt, code } => {
-            crate::println!(
-                "FATAL TRAP: interrupt={interrupt} code={code} sepc={:#x} stval={:#x}",
-                frame.sepc, frame.stval
-            );
-            crate::println!("{frame:#x?}");
-            panic!("unhandled trap");
+            crate::println!("trap: unknown cause interrupt={interrupt} code={code}");
+            fatal("unknown", frame);
         }
     }
 }
