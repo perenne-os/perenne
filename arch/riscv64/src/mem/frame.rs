@@ -91,6 +91,32 @@ impl BitmapAllocator {
     }
 }
 
+/// The kernel's one allocator instance; `mem::init()` arms it over
+/// the free RAM after the kernel image.
+#[cfg(target_arch = "riscv64")]
+pub(crate) static ALLOCATOR: super::SingleHartCell<BitmapAllocator> =
+    super::SingleHartCell::new(BitmapAllocator::new());
+
+/// Allocate a frame, zeroed. Zeroing on alloc (not free) means a
+/// recycled frame never leaks the previous user's bytes — cheap
+/// hygiene the security spine (Phase 3) will rely on.
+#[cfg(target_arch = "riscv64")]
+pub fn alloc_zeroed() -> Option<PhysFrame> {
+    let frame = ALLOCATOR.with(|a| a.alloc())?;
+    // SAFETY: the frame is managed RAM we exclusively own, identity-
+    // mapped RW (or the MMU is still off during mem::init), so writing
+    // FRAME_SIZE bytes at its base is in-bounds.
+    unsafe { core::ptr::write_bytes(frame.0 as *mut u8, 0, FRAME_SIZE) };
+    Some(frame)
+}
+
+/// Return a frame to the allocator. Panics on double-free or an
+/// unmanaged address (see [`BitmapAllocator::free`]).
+#[cfg(target_arch = "riscv64")]
+pub fn free(frame: PhysFrame) {
+    ALLOCATOR.with(|a| a.free(frame));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

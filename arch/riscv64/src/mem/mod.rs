@@ -49,6 +49,84 @@ impl<T> SingleHartCell<T> {
     }
 }
 
+/// End of RAM on QEMU virt with `-m 128M` (pinned by the run/test
+/// scripts). **QEMU-specific constant** like timer.rs's TIMEBASE_HZ —
+/// real hardware (Phase 4) must read the memory map from the device
+/// tree instead.
+#[cfg(target_arch = "riscv64")]
+const RAM_END: usize = 0x8800_0000;
+
+#[cfg(target_arch = "riscv64")]
+extern "C" {
+    static __text_start: u8;
+    static __text_end: u8;
+    static __rodata_start: u8;
+    static __rodata_end: u8;
+    static __data_start: u8;
+    static __data_end: u8;
+    static __stack_start: u8;
+    static __stack_top: u8;
+    static __kernel_end: u8;
+}
+
+/// The address of a linker-script symbol. Only the address is
+/// meaningful; the "value" must never be read. Must be called from
+/// an `unsafe` context (the caller vouches that the symbol is defined
+/// by `kernel.ld` and the address is valid).
+#[cfg(target_arch = "riscv64")]
+macro_rules! sym {
+    ($name:ident) => {
+        // addr_of! takes the symbol's address without dereferencing it.
+        core::ptr::addr_of!($name) as usize
+    };
+}
+
+/// Bring memory management up: arm the frame allocator over free RAM,
+/// identity-map the kernel with W^X section permissions, enable Sv39.
+///
+/// Call exactly once, after `trap::init()` (a paging mistake should
+/// fault loudly, not hang) and before `timer::start()` (no interrupts
+/// while the world is being remapped).
+#[cfg(target_arch = "riscv64")]
+pub fn init() {
+    use paging::{PTE_G, PTE_R, PTE_W, PTE_X};
+
+    // SAFETY: all sym! calls read linker-script symbol addresses (not
+    // their contents) from kernel.ld; the ranges are 4 KiB-aligned by
+    // the linker script. The MMU is still off, so writes land in the
+    // physical addresses we own.
+    unsafe {
+        let free_ram = (sym!(__kernel_end), RAM_END);
+        frame::ALLOCATOR.with(|a| a.init(free_ram.0, free_ram.1));
+
+        let root = frame::alloc_zeroed().expect("no frame for root page table").0
+            as *mut paging::PageTable;
+        paging::map_range(root, sym!(__text_start), sym!(__text_end), PTE_R | PTE_X | PTE_G);
+        paging::map_range(root, sym!(__rodata_start), sym!(__rodata_end), PTE_R | PTE_G);
+        paging::map_range(root, sym!(__data_start), sym!(__data_end), PTE_R | PTE_W | PTE_G);
+        // The guard page between __data_end and __stack_start stays
+        // unmapped: stack overflow faults instead of corrupting .bss.
+        paging::map_range(root, sym!(__stack_start), sym!(__stack_top), PTE_R | PTE_W | PTE_G);
+        // Free RAM mapped eagerly so allocated frames are immediately
+        // usable — no fault-and-map machinery in 2b.
+        paging::map_range(root, free_ram.0, free_ram.1, PTE_R | PTE_W | PTE_G);
+        // SAFETY: everything the kernel touches is now identity-mapped.
+        crate::csr::satp_write(crate::csr::SATP_MODE_SV39 | (root as usize >> 12));
+    }
+}
+
+/// Frames currently free (for boot diagnostics).
+#[cfg(target_arch = "riscv64")]
+pub fn free_frames() -> usize {
+    frame::ALLOCATOR.with(|a| a.free_frames())
+}
+
+/// Frames managed in total (for boot diagnostics).
+#[cfg(target_arch = "riscv64")]
+pub fn total_frames() -> usize {
+    frame::ALLOCATOR.with(|a| a.total_frames())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
