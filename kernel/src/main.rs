@@ -18,7 +18,7 @@ mod bare {
     use core::panic::PanicInfo;
 
     use kernel::GREETING;
-    use kernel_arch_riscv64::{println, timer, trap};
+    use kernel_arch_riscv64::{mem, println, timer, trap};
     use kernel_common::PROJECT_NAME;
 
     /// Rust entry, called from the boot assembly with the arguments
@@ -26,7 +26,7 @@ mod bare {
     #[no_mangle]
     extern "C" fn kmain(hartid: usize, _dtb: usize) -> ! {
         println!();
-        println!("{GREETING} from {PROJECT_NAME} - Phase 2a (hart {hartid})");
+        println!("{GREETING} from {PROJECT_NAME} - Phase 2b (hart {hartid})");
 
         trap::init();
         // Deliberate breakpoint: proves the handler catches an exception
@@ -35,9 +35,67 @@ mod bare {
         unsafe { core::arch::asm!("ebreak") };
         println!("survived breakpoint");
 
+        mem::init();
+        println!(
+            "paging: sv39 on ({} of {} frames free)",
+            mem::free_frames(),
+            mem::total_frames()
+        );
+        wx_probe();
+        frame_roundtrip();
+
         timer::start();
         println!("(kernel idles; heartbeat ~1/s; exit QEMU with Ctrl-A then X)");
         park()
+    }
+
+    /// 2b's deliberate fault (like 2a's ebreak): prove the MMU blocks
+    /// writes to read-only memory. The store is inline asm so Rust never
+    /// sees a write through a shared reference — that would be UB even
+    /// though the store faults before retiring.
+    fn wx_probe() {
+        static RODATA_PROBE: u64 = 0x600D_C0DE;
+        trap::expect_wx_fault();
+        // SAFETY: the store targets .rodata, mapped R-- — it faults, the
+        // trap handler consumes the probe flag and skips the instruction.
+        unsafe {
+            core::arch::asm!(
+                "sd zero, 0({addr})",
+                addr = in(reg) core::ptr::addr_of!(RODATA_PROBE) as usize,
+                options(nostack),
+            );
+        }
+        assert!(
+            !trap::wx_fault_pending(),
+            "W^X broken: rodata write did not fault"
+        );
+        // SAFETY: reading our own static; volatile so the check can't be
+        // const-folded away.
+        let value = unsafe { core::ptr::read_volatile(&RODATA_PROBE) };
+        assert_eq!(value, 0x600D_C0DE, "W^X broken: rodata was modified");
+        println!("wx: rodata write blocked");
+    }
+
+    /// Prove the allocator round-trips: alloc -> write -> free ->
+    /// re-alloc returns the same (re-zeroed) frame.
+    fn frame_roundtrip() {
+        let first = mem::frame::alloc_zeroed().expect("frame alloc failed");
+        let p = first.0 as *mut u64;
+        // SAFETY: `first` is a 4 KiB frame we own, identity-mapped RW.
+        unsafe {
+            assert_eq!(p.read_volatile(), 0, "frame not zeroed on alloc");
+            p.write_volatile(0x600D_F00D);
+            assert_eq!(p.read_volatile(), 0x600D_F00D, "frame not writable");
+        }
+        mem::frame::free(first);
+        let second = mem::frame::alloc_zeroed().expect("frame re-alloc failed");
+        assert_eq!(first, second, "first-fit should recycle the freed frame");
+        // SAFETY: same frame, still mapped RW.
+        unsafe {
+            assert_eq!(p.read_volatile(), 0, "recycled frame not re-zeroed");
+        }
+        mem::frame::free(second);
+        println!("frames: alloc/free ok");
     }
 
     /// Halt this hart: `wfi` sleeps until an interrupt; the trap handler
