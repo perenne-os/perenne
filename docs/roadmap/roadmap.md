@@ -24,11 +24,11 @@ Decomposed into three sub-phases (2026-06-10), each with its own design → plan
 - **You learn:** the trap CSRs (`stvec`, `scause`, `sepc`, …), trap entry/exit and context saving, the SBI TIME extension ([learning note 0003](../learning/0003-traps-and-interrupts.md)).
 - **Done when:** `./tools/test-qemu.ps1` sees a survived breakpoint and ≥ 2 timer ticks in one boot.
 
-### Phase 2b — Memory management
+### Phase 2b — Memory management  *(done — 2026-06-13)*
 
 - **Goal:** physical frame allocation and virtual memory (paging) — the kernel manages its own address space.
 - **You learn:** physical vs. virtual addresses, page tables, the MMU.
-- **Done when:** the kernel runs with paging enabled and can allocate/free frames.
+- **Done when:** `./tools/test-qemu.ps1` observes Sv39 paging active with W^X section permissions proven, frame alloc/free round-trip, and all Phase 2a milestones — in one boot.
 
 ### Phase 2c — Basic scheduling
 

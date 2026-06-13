@@ -39,3 +39,17 @@ Plain-language definitions of terms used throughout these docs. Aimed at someone
 - **`sret`** — the return-from-trap instruction: restores the pre-trap privilege mode and jumps back to `sepc`.
 - **`ebreak`** — the RISC-V breakpoint instruction; Phase 2a triggers one on purpose to prove trap recovery works.
 - **Timebase** — the fixed rate the `time` counter ticks at (10 MHz on QEMU virt), independent of CPU clock speed; deadlines for timer interrupts are expressed in these ticks.
+- **Physical address** — a real location in RAM chips. Before Phase 2b, the only kind of address the kernel had.
+- **Virtual address** — the address code actually uses once the MMU is on; translated to a physical address through page tables on every access.
+- **Page / frame** — the same 4 KiB unit seen from two sides: a *page* is virtual, a *frame* is the physical RAM behind it.
+- **MMU (Memory Management Unit)** — CPU hardware that translates virtual to physical addresses and enforces per-page permissions, faulting on violations.
+- **Page table** — the tree the MMU walks to translate addresses. In Sv39 it has three levels; each table is one 4 KiB frame of 512 entries.
+- **PTE (Page Table Entry)** — one slot in a page table: the next level's (or final frame's) number plus permission flags (Valid/Read/Write/eXecute…).
+- **Sv39** — RISC-V's three-level paging scheme: 39-bit virtual addresses, 4 KiB pages. What Phase 2b enables.
+- **`satp`** — the CSR that holds the root page table's frame number and translation mode; writing it turns paging on.
+- **TLB (Translation Lookaside Buffer)** — the MMU's cache of recent translations; must be flushed (`sfence.vma`) when mappings change.
+- **`sfence.vma`** — the RISC-V instruction that flushes the TLB so stale translations can't survive a page-table change.
+- **Identity mapping** — mapping each virtual address to the identical physical address. Changes nothing about *where* things are — and everything about *what's allowed*, via permission bits.
+- **W^X (write XOR execute)** — the policy that no memory is both writable and executable: code can't be overwritten, data can't be run. Phase 2b's payoff.
+- **Guard page** — a deliberately unmapped page (here: below the stack) so an overflow faults immediately instead of corrupting the neighbor.
+- **Frame allocator** — the kernel component that owns physical RAM and hands out/reclaims 4 KiB frames; ours tracks them in a bitmap.
