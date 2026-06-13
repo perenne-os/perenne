@@ -62,7 +62,7 @@ pub struct PageTable {
 /// MMU off (mem::init) or on identity-mapped table frames.
 #[cfg(target_arch = "riscv64")]
 pub unsafe fn map_page(root: *mut PageTable, va: usize, pa: usize, flags: u64) {
-    debug_assert!(va % PAGE_SIZE == 0 && pa % PAGE_SIZE == 0);
+    assert!(va % PAGE_SIZE == 0 && pa % PAGE_SIZE == 0, "map_page: unaligned va={va:#x} pa={pa:#x}");
     let mut table = root;
     for level in [2, 1] {
         let idx = vpn(va, level);
