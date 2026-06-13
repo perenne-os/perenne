@@ -245,6 +245,31 @@ __trap_entry:
 "#
 );
 
+#[cfg(target_arch = "riscv64")]
+use core::sync::atomic::{AtomicBool, Ordering};
+
+/// One-shot flag for the deliberate W^X probe (kmain's write to
+/// .rodata — 2b's analogue of 2a's ebreak). Set by [`expect_wx_fault`],
+/// consumed by the dispatcher when the expected store page fault
+/// arrives.
+#[cfg(target_arch = "riscv64")]
+static EXPECTING_WX_FAULT: AtomicBool = AtomicBool::new(false);
+
+/// Arm the W^X probe: the next store page fault is expected and will be
+/// reported and skipped instead of panicking.
+#[cfg(target_arch = "riscv64")]
+pub fn expect_wx_fault() {
+    EXPECTING_WX_FAULT.store(true, Ordering::Release);
+}
+
+/// True while an armed probe has not yet faulted. kmain asserts this is
+/// false after the probe write — if the MMU let the write through, W^X
+/// is broken and the boot must fail loudly.
+#[cfg(target_arch = "riscv64")]
+pub fn wx_fault_pending() -> bool {
+    EXPECTING_WX_FAULT.load(Ordering::Acquire)
+}
+
 /// Install [`__trap_entry`] as the trap vector (direct mode). Call once,
 /// early in kmain, before anything can fault and before interrupts are
 /// enabled.
@@ -262,7 +287,8 @@ pub fn init() {
 #[cfg(target_arch = "riscv64")]
 fn instruction_len_at(addr: usize) -> usize {
     // SAFETY: addr is the sepc of a just-executed instruction, so it
-    // points at readable, physically-addressed kernel code (no paging yet).
+    // points into .text — identity-mapped R-X once paging is on (and
+    // physically addressed before), so the read is always legal.
     let parcel = unsafe { core::ptr::read_volatile(addr as *const u16) };
     instruction_len(parcel)
 }
@@ -298,7 +324,16 @@ extern "C" fn trap_handler(frame: &mut TrapFrame) {
         Cause::SupervisorTimer => crate::timer::on_tick(),
         Cause::InstructionPageFault => fatal("instruction page fault", frame),
         Cause::LoadPageFault => fatal("load page fault", frame),
-        Cause::StorePageFault => fatal("store page fault", frame),
+        Cause::StorePageFault => {
+            if EXPECTING_WX_FAULT.swap(false, Ordering::AcqRel) {
+                crate::println!("trap: W^X store fault at {:#x} (probe)", frame.stval);
+                // Like the breakpoint: skip the faulting store so
+                // execution resumes after the probe.
+                frame.sepc += instruction_len_at(frame.sepc);
+            } else {
+                fatal("store page fault", frame);
+            }
+        }
         Cause::Unknown { interrupt, code } => {
             crate::println!("trap: unknown cause interrupt={interrupt} code={code}");
             fatal("unknown", frame);
