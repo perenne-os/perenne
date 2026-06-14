@@ -30,6 +30,12 @@ pub mod task;
 /// gated context-switch assembly and the static scheduler instance.
 pub mod sched;
 
+/// System calls: the U-mode → kernel entry surface. Pure decoding and
+/// the confused-deputy pointer guard are host-tested here; the gated
+/// dispatcher (which reads user memory and writes the console) lives
+/// inside.
+pub mod syscall;
+
 /// The architecture identifier this crate targets.
 pub const ARCH: &str = "riscv64";
 

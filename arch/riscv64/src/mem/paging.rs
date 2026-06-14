@@ -14,7 +14,7 @@ pub const PTE_V: u64 = 1 << 0; // valid
 pub const PTE_R: u64 = 1 << 1; // readable
 pub const PTE_W: u64 = 1 << 2; // writable
 pub const PTE_X: u64 = 1 << 3; // executable
-// 1 << 4 is U (user-accessible) — deliberately absent until Phase 3.
+pub const PTE_U: u64 = 1 << 4; // user-accessible (Phase 3a)
 pub const PTE_G: u64 = 1 << 5; // global: valid in every address space
 pub const PTE_A: u64 = 1 << 6; // accessed
 pub const PTE_D: u64 = 1 << 7; // dirty
@@ -137,6 +137,14 @@ mod tests {
         assert_ne!(pte & PTE_R, 0);
         assert_ne!(pte & PTE_W, 0);
         assert_eq!(pte & PTE_X, 0);
+    }
+
+    #[test]
+    fn pte_for_carries_the_user_bit() {
+        let pte = pte_for(0x8030_0000, PTE_R | PTE_X | PTE_U);
+        assert!(pte_is_valid(pte));
+        assert_ne!(pte & PTE_U, 0);
+        assert_ne!(pte & PTE_X, 0);
     }
 
     #[test]
