@@ -47,6 +47,8 @@ pub enum Cause {
     /// Store to an unmapped/unwritable page (code 15) — what the W^X
     /// probe deliberately triggers.
     StorePageFault,
+    /// `ecall` executed from U-mode (exception code 8) — a syscall.
+    UserEcall,
     /// Anything we don't handle yet.
     Unknown { interrupt: bool, code: usize },
 }
@@ -65,6 +67,7 @@ pub fn decode(scause: usize) -> Cause {
         (false, 12) => Cause::InstructionPageFault,
         (false, 13) => Cause::LoadPageFault,
         (false, 15) => Cause::StorePageFault,
+        (false, 8) => Cause::UserEcall,
         _ => Cause::Unknown { interrupt, code },
     }
 }
@@ -139,6 +142,12 @@ mod tests {
         assert_eq!(decode(12), Cause::InstructionPageFault);
         assert_eq!(decode(13), Cause::LoadPageFault);
         assert_eq!(decode(15), Cause::StorePageFault);
+    }
+
+    #[test]
+    fn decodes_user_ecall() {
+        // Exception code 8 = environment call from U-mode.
+        assert_eq!(decode(8), Cause::UserEcall);
     }
 
     #[test]
@@ -293,6 +302,15 @@ fn instruction_len_at(addr: usize) -> usize {
     instruction_len(parcel)
 }
 
+/// `sstatus.SPP` (bit 8) records the privilege the hart was in when the
+/// trap fired: 0 = U-mode, 1 = S-mode. A trap "from user" is contained
+/// (the task is killed); a fault from the kernel itself is fatal-to-the-
+/// kernel, except the deliberate S-mode W^X probe.
+#[cfg(target_arch = "riscv64")]
+fn from_user(frame: &TrapFrame) -> bool {
+    frame.sstatus & (1 << 8) == 0
+}
+
 /// Unrecoverable trap: print everything we know, then panic. `stval`
 /// holds the faulting address for page faults.
 #[cfg(target_arch = "riscv64")]
@@ -327,6 +345,10 @@ extern "C" fn trap_handler(frame: &mut TrapFrame) {
             // register set is already saved in this TrapFrame; preempt()
             // parks the handler's continuation and runs the next task.
             crate::sched::preempt();
+        }
+        Cause::UserEcall => {
+            // Placeholder: full dispatch wired in Task 7.
+            fatal("user ecall (not yet dispatched)", frame)
         }
         Cause::InstructionPageFault => fatal("instruction page fault", frame),
         Cause::LoadPageFault => fatal("load page fault", frame),
