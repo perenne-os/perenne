@@ -7,7 +7,12 @@
 //! `preempt` — everything that touches CSRs, assembly, or the live
 //! console.
 
-use crate::task::{Context, Task, TaskState};
+use crate::task::{Task, TaskState};
+// `Context` is named only by the gated switch code and the host tests
+// (the pure run queue holds `Task`s, not `Context`s), so gate the import
+// to those two configs to keep the host lib build warning-free.
+#[cfg(any(target_arch = "riscv64", test))]
+use crate::task::Context;
 
 /// Maximum concurrent tasks: the three demo tasks plus one slot of
 /// headroom. The bootstrap (`kmain`) context is NOT a slot — it is a
@@ -257,6 +262,7 @@ extern "C" {
     fn enter_user_asm();
 }
 
+#[cfg(target_arch = "riscv64")]
 use crate::task::ExitReason;
 
 /// The kernel context to resume when the user task ends. `enter_user`
