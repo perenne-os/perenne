@@ -73,9 +73,13 @@ preemption):
   privilege (SPP) is 3b's scheduler-integration work.
 - **Multiple user tasks** — exactly one, to keep the focus on the boundary
   mechanism. A single dedicated trap stack therefore suffices (§3.3).
-- **`sstatus.SUM`** — left 0. The kernel does not (and must not) read user
-  pages by accident; the `print` syscall copies *with explicit
-  validation* (§3.4), not by flipping SUM.
+- **Persisting `sstatus.SUM`** — `SUM` ("permit Supervisor User Memory
+  access") stays 0 by default, so an *accidental* kernel dereference of a
+  user pointer faults — a real defense. It is **not** left 0 during the
+  `print` copy: an S-mode load of a `U` page faults while `SUM=0`, so the
+  syscall opens a brief, validated `SUM` window around the copy and clears
+  it immediately after (§3.4). A persistent/global `SUM` policy is the
+  non-goal; the scoped window is required.
 
 ## 3. Design
 
@@ -176,6 +180,15 @@ overrun past the region end, integer-overflow/wrap of `ptr+len`, and a
 kernel pointer (outside the region) rejected. 3a validates against the
 known static user-region bounds; a full page-table-walk validation (check
 each page is `U`+readable) is noted for 3b when regions become dynamic.
+
+**The `SUM` window.** Validation proves the *pointer* is legitimate, but
+the hardware still blocks the read: an S-mode load of a `U` page faults
+while `sstatus.SUM = 0`. So after validation succeeds, the syscall sets
+`SUM`, copies the bytes into a small kernel buffer, and clears `SUM`
+again — the privileged read is enabled only for the validated copy and
+nowhere else. The two defenses compose: validation stops the kernel from
+*choosing* a kernel address, and the default `SUM = 0` stops it from
+*accidentally* honoring one outside this window.
 
 ### 3.5 Entering U-mode and coming back — `enter_user`
 
