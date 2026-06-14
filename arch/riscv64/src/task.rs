@@ -44,6 +44,24 @@ pub enum TaskState {
     Running,
 }
 
+/// Why a U-mode task stopped running, reported back by `sched::enter_user`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExitReason {
+    /// The task called `exit(code)`.
+    Exited(usize),
+    /// The task was killed by a fatal U-mode trap (e.g. touching kernel
+    /// memory). Carries the decoded cause for the diagnostic line.
+    Killed(crate::trap::Cause),
+}
+
+/// Compute the `sstatus` value to load before `sret`ing into U-mode,
+/// starting from the current `sstatus`. Clears SPP (bit 8) so `sret`
+/// drops to U-mode, and sets SPIE (bit 5) so interrupts are enabled after
+/// the return. All other bits (notably SUM = 0) are preserved.
+pub fn user_sstatus(current: usize) -> usize {
+    (current & !(1 << 8)) | (1 << 5)
+}
+
 /// An in-kernel task: its parked context, its state, the top of its
 /// static stack (kept for diagnostics), and a name for the demo output.
 #[derive(Debug)]
@@ -76,5 +94,22 @@ mod tests {
         assert_eq!(c.ra, 0);
         assert_eq!(c.sp, 0);
         assert_eq!(c.s, [0; 12]);
+    }
+
+    #[test]
+    fn user_sstatus_drops_to_user_with_interrupts_on() {
+        // Start from SPP = 1 (in S-mode) with SPIE clear.
+        let s = user_sstatus(1 << 8);
+        assert_eq!(s & (1 << 8), 0, "SPP must be 0 so sret enters U-mode");
+        assert_ne!(s & (1 << 5), 0, "SPIE must be 1 so interrupts resume");
+    }
+
+    #[test]
+    fn user_sstatus_preserves_other_bits() {
+        // SUM (bit 18) must NOT be turned on by the forge.
+        let s = user_sstatus(1 << 18);
+        assert_ne!(s & (1 << 18), 0, "unrelated bits preserved");
+        assert_eq!(s & (1 << 8), 0);
+        assert_ne!(s & (1 << 5), 0);
     }
 }
