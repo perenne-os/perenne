@@ -53,3 +53,13 @@ Plain-language definitions of terms used throughout these docs. Aimed at someone
 - **W^X (write XOR execute)** — the policy that no memory is both writable and executable: code can't be overwritten, data can't be run. Phase 2b's payoff.
 - **Guard page** — a deliberately unmapped page (here: below the stack) so an overflow faults immediately instead of corrupting the neighbor.
 - **Frame allocator** — the kernel component that owns physical RAM and hands out/reclaims 4 KiB frames; ours tracks them in a bitmap.
+- **Task / kernel thread** — an independently schedulable unit of execution inside the kernel: a stack plus a saved register context. Phase 2c runs three of them.
+- **Context switch** — saving the registers of the running task and restoring another's, so the CPU resumes a different task as if it had never stopped.
+- **Context (callee-saved frame)** — the minimal register set a *voluntary* switch must preserve: `ra`, `sp`, and `s0..s11`. Smaller than a trap frame because the calling convention already saved the rest.
+- **Run queue** — the kernel's list of runnable tasks and the bookkeeping that picks which runs next; ours is a fixed array scanned round-robin.
+- **Round-robin** — the simplest fair scheduling policy: give each ready task a turn in rotation, then start over.
+- **Cooperative scheduling** — tasks keep the CPU until they voluntarily `yield`. Simple, but one selfish task can starve the rest.
+- **Preemptive scheduling** — the kernel forcibly takes the CPU back (here, on a timer tick), so no task can monopolize it.
+- **Yield** — a task voluntarily giving up the CPU to let another run; in this kernel, `yield_now()`.
+- **Time slice / tick-policy hook** — the decision made on each timer tick about whether to preempt the running task; the point where the heartbeat becomes a scheduler clock.
+- **Trampoline** — a tiny stub a new task first lands in: it sets up the task's running conditions (here, enabling interrupts) before jumping to the real entry function.

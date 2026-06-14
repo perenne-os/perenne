@@ -22,6 +22,14 @@ pub mod trap;
 /// Memory management: bitmap frame allocator and Sv39 paging. Pure logic (bitmap and PTE math, host-testable); the gated parts (statics, page-table walker, satp) live inside.
 pub mod mem;
 
+/// Tasks and their saved register context. Pure types (host-testable);
+/// the context-switch assembly and the scheduler statics live in `sched`.
+pub mod task;
+
+/// Scheduling: the round-robin run queue (pure, host-testable) plus the
+/// gated context-switch assembly and the static scheduler instance.
+pub mod sched;
+
 /// The architecture identifier this crate targets.
 pub const ARCH: &str = "riscv64";
 

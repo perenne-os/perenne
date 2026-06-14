@@ -18,7 +18,7 @@ mod bare {
     use core::panic::PanicInfo;
 
     use kernel::GREETING;
-    use kernel_arch_riscv64::{mem, println, timer, trap};
+    use kernel_arch_riscv64::{mem, println, sched, timer, trap};
     use kernel_common::PROJECT_NAME;
 
     /// Rust entry, called from the boot assembly with the arguments
@@ -26,7 +26,7 @@ mod bare {
     #[no_mangle]
     extern "C" fn kmain(hartid: usize, _dtb: usize) -> ! {
         println!();
-        println!("{GREETING} from {PROJECT_NAME} - Phase 2b (hart {hartid})");
+        println!("{GREETING} from {PROJECT_NAME} - Phase 2c (hart {hartid})");
 
         trap::init();
         // Deliberate breakpoint: proves the handler catches an exception
@@ -44,9 +44,19 @@ mod bare {
         wx_probe();
         frame_roundtrip();
 
+        // Phase 2c: spawn three tasks and hand the CPU to the scheduler.
+        // Interrupts are enabled here (timer::start) BEFORE entering, so
+        // the cooperative round-robin runs in the sub-millisecond window
+        // before the first tick (~1 s away); preemption then takes over.
+        // addr_of! takes each static stack's address without forming a
+        // reference (no unsafe needed, no static_mut_refs lint); the top
+        // of the array is this task's initial stack pointer.
+        sched::spawn("A", task_a, core::ptr::addr_of!(STACK_A) as usize + TASK_STACK);
+        sched::spawn("B", task_b, core::ptr::addr_of!(STACK_B) as usize + TASK_STACK);
+        sched::spawn("C", task_c, core::ptr::addr_of!(STACK_C) as usize + TASK_STACK);
         timer::start();
-        println!("(kernel idles; heartbeat ~1/s; exit QEMU with Ctrl-A then X)");
-        park()
+        println!("(scheduler starting; heartbeat ~1/s; exit QEMU with Ctrl-A then X)");
+        sched::enter()
     }
 
     /// 2b's deliberate fault (like 2a's ebreak): prove the MMU blocks
@@ -96,6 +106,64 @@ mod bare {
         }
         mem::frame::free(second);
         println!("frames: alloc/free ok");
+    }
+
+    use core::sync::atomic::{AtomicBool, Ordering};
+
+    /// Per-task kernel stack size. 16 KiB is ample for these print loops;
+    /// per-task guard pages are deferred (see the Phase 2c spec §3.5).
+    const TASK_STACK: usize = 16 * 1024;
+
+    static mut STACK_A: [u8; TASK_STACK] = [0; TASK_STACK];
+    static mut STACK_B: [u8; TASK_STACK] = [0; TASK_STACK];
+    static mut STACK_C: [u8; TASK_STACK] = [0; TASK_STACK];
+
+    /// Set by task C when it stops yielding. A and B only ever observe it
+    /// as `true` if a timer preemption schedules them while C hogs the
+    /// CPU — which is exactly the preemption proof.
+    static HOGGING: AtomicBool = AtomicBool::new(false);
+
+    extern "C" fn task_a() -> ! {
+        worker("A")
+    }
+
+    extern "C" fn task_b() -> ! {
+        worker("B")
+    }
+
+    /// The cooperative citizens: two visible steps yielding between each
+    /// (proving round-robin), then spin yielding. When C starts hogging,
+    /// the next time preemption lets this task run it prints the proof
+    /// line once, then goes quiet.
+    fn worker(name: &str) -> ! {
+        for n in 0..2 {
+            println!("sched: {name} step {n}");
+            sched::yield_now();
+        }
+        loop {
+            if HOGGING.load(Ordering::Acquire) {
+                println!("sched: {name} preempted the hog");
+                loop {
+                    sched::yield_now();
+                }
+            }
+            sched::yield_now();
+        }
+    }
+
+    /// The hog: two cooperative steps, then a tight loop that NEVER
+    /// yields. Without preemption the kernel would be stuck here forever;
+    /// the timer tick is what lets A and B run again.
+    extern "C" fn task_c() -> ! {
+        for n in 0..2 {
+            println!("sched: C step {n}");
+            sched::yield_now();
+        }
+        println!("sched: C hogging (no yield)");
+        HOGGING.store(true, Ordering::Release);
+        loop {
+            core::hint::spin_loop();
+        }
     }
 
     /// Halt this hart: `wfi` sleeps until an interrupt; the trap handler
