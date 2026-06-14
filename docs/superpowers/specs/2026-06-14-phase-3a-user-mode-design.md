@@ -215,14 +215,20 @@ task be a bounded episode the kernel supervises.
 
 ### 3.6 Termination and containment
 
-`TaskState` gains `Exited`. One `terminate(reason)` path serves both:
+One `terminate_user(reason)` path serves both:
 
-- the `exit` syscall (`reason = Exited { code }`), and
-- a **fatal U-mode fault** (`reason = Killed { cause }`) — e.g. the
+- the `exit` syscall (`reason = Exited(code)`), and
+- a **fatal U-mode fault** (`reason = Killed(cause)`) — e.g. the
   boundary-proof load from a kernel page.
 
-`terminate` marks the task `Exited` and restores the parked kernel context
-(§3.5). No stack reclamation (deferred, §2).
+`terminate_user` records the `ExitReason`, resets the `sscratch` sentinel
+to 0 (the kernel is resuming), and restores the parked kernel context
+(§3.5), so `enter_user` returns it to `kmain`. No stack reclamation
+(deferred, §2). Because the 3a user task is **standalone** (not a run-queue
+slot — §2), `TaskState` does **not** gain an `Exited` variant here: there
+is no queued task to mark. `ExitReason` is the whole story. `TaskState`
+grows a real state machine (blocked/exited) in 3b, when user tasks join
+the run queue.
 
 **Distinguishing a U-mode fault from 2b's W^X probe.** 2b's probe is an
 S-mode store to `.rodata`, recovered by skipping the instruction
