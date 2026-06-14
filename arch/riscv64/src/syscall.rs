@@ -93,3 +93,68 @@ mod tests {
         assert!(validate_user_buffer(0x1000, 0x2000, 0x1100, 0));
     }
 }
+
+/// What the trap handler should do after a syscall returns.
+#[cfg(target_arch = "riscv64")]
+pub enum Outcome {
+    /// Resume the user task (the handler advances `sepc` past the `ecall`).
+    Resume,
+    /// The task asked to exit with this code.
+    Exit(usize),
+}
+
+/// Largest `print` we copy in one syscall. The demo strings are short; a
+/// longer buffer is silently truncated to this (a real kernel would loop).
+#[cfg(target_arch = "riscv64")]
+const PRINT_MAX: usize = 256;
+
+/// Service a U-mode `ecall`. Reads the ABI registers from `frame`,
+/// dispatches, and writes the return value into the `a0` slot. Reading
+/// user memory for `print` happens only inside a validated `SUM` window.
+///
+/// Register/`TrapFrame` mapping: `regs[n-1]` holds `x_n`, so `a0` = `x10`
+/// is `regs[9]`, `a1` = `x11` is `regs[10]`, `a7` = `x17` is `regs[16]`.
+#[cfg(target_arch = "riscv64")]
+pub fn dispatch(frame: &mut crate::trap::TrapFrame) -> Outcome {
+    let a7 = frame.regs[16];
+    let a0 = frame.regs[9];
+    let a1 = frame.regs[10];
+    match decode_syscall(a7) {
+        Syscall::Print => {
+            let written = sys_print(a0, a1);
+            frame.regs[9] = written; // return value in a0
+            Outcome::Resume
+        }
+        Syscall::Exit => Outcome::Exit(a0),
+        Syscall::Unknown(_) => {
+            frame.regs[9] = usize::MAX; // -1: unknown syscall
+            Outcome::Resume
+        }
+    }
+}
+
+/// Validate, then copy `[ptr, ptr+len)` out of user memory and print it.
+/// Returns the number of bytes written, or `usize::MAX` if validation
+/// failed (the confused-deputy guard refused the pointer).
+#[cfg(target_arch = "riscv64")]
+fn sys_print(ptr: usize, len: usize) -> usize {
+    let (lo, hi) = crate::mem::user_data_bounds();
+    if !validate_user_buffer(lo, hi, ptr, len) {
+        return usize::MAX;
+    }
+    let n = core::cmp::min(len, PRINT_MAX);
+    let mut buf = [0u8; PRINT_MAX];
+    // SAFETY: the range is validated to lie within the user data region,
+    // which is mapped R+U. SUM is opened only for this copy and cleared
+    // immediately after, so the kernel cannot read kernel memory here.
+    unsafe {
+        crate::csr::sstatus_set_sum();
+        for i in 0..n {
+            buf[i] = core::ptr::read_volatile((ptr + i) as *const u8);
+        }
+        crate::csr::sstatus_clear_sum();
+    }
+    // Print as a lossy string; the demo message is valid UTF-8.
+    crate::print!("{}", core::str::from_utf8(&buf[..n]).unwrap_or("<non-utf8>"));
+    n
+}

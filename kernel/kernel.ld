@@ -61,6 +61,22 @@ SECTIONS
         . += 64K;
         __stack_top = .;
     }
+
+    /* Phase 3a: the embedded U-mode "program". mem::init() maps these with
+     * the PTE U bit (text R-X-U, data RW-U); everything above stays non-U,
+     * so a U-mode access to the kernel faults. 4 KiB-aligned: permissions
+     * are per-page. */
+    . = ALIGN(4K);
+    __user_text_start = .;
+    .user_text : { *(.user_text) }
+    . = ALIGN(4K);
+    __user_text_end = .;
+
+    __user_data_start = .;
+    .user_data : { *(.user_data) }
+    . = ALIGN(4K);
+    __user_data_end = .;
+
     __kernel_end = .;            /* frame allocator manages from here */
 
     /DISCARD/ : {

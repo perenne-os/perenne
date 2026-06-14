@@ -373,13 +373,26 @@ extern "C" fn trap_handler(frame: &mut TrapFrame) {
             crate::sched::preempt();
         }
         Cause::UserEcall => {
-            // Placeholder: full dispatch wired in Task 7.
-            fatal("user ecall (not yet dispatched)", frame)
+            // A syscall from U-mode. ecall does not advance the PC, so on
+            // Resume we step sepc past the 4-byte ecall; Exit never returns
+            // here (terminate_user switches back to kmain).
+            match crate::syscall::dispatch(frame) {
+                crate::syscall::Outcome::Resume => frame.sepc += 4,
+                crate::syscall::Outcome::Exit(code) => {
+                    crate::sched::terminate_user(crate::task::ExitReason::Exited(code))
+                }
+            }
+        }
+        Cause::InstructionPageFault | Cause::LoadPageFault if from_user(frame) => {
+            // A U-mode task reached for memory it does not own: contain it.
+            crate::sched::terminate_user(crate::task::ExitReason::Killed(decode(frame.scause)));
         }
         Cause::InstructionPageFault => fatal("instruction page fault", frame),
         Cause::LoadPageFault => fatal("load page fault", frame),
         Cause::StorePageFault => {
-            if EXPECTING_WX_FAULT.swap(false, Ordering::AcqRel) {
+            if from_user(frame) {
+                crate::sched::terminate_user(crate::task::ExitReason::Killed(Cause::StorePageFault));
+            } else if EXPECTING_WX_FAULT.swap(false, Ordering::AcqRel) {
                 crate::println!("trap: W^X store fault at {:#x} (probe)", frame.stval);
                 // Like the breakpoint: skip the faulting store so
                 // execution resumes after the probe.
