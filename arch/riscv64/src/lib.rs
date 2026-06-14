@@ -26,6 +26,10 @@ pub mod mem;
 /// the context-switch assembly and the scheduler statics live in `sched`.
 pub mod task;
 
+/// Scheduling: the round-robin run queue (pure, host-testable) plus the
+/// gated context-switch assembly and the static scheduler instance.
+pub mod sched;
+
 /// The architecture identifier this crate targets.
 pub const ARCH: &str = "riscv64";
 
