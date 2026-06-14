@@ -38,9 +38,28 @@ Decomposed into three sub-phases (2026-06-10), each with its own design → plan
 
 ## Phase 3 — Security spine
 
-- **Goal:** capability-based isolation and post-quantum crypto primitives, designed in from here.
-- **You learn:** capabilities, IPC, integrating audited crypto.
-- **Done when:** components run with least authority and a PQC primitive is usable.
+Decomposed into three sub-phases (2026-06-14), mirroring the 2a/2b/2c split.
+Capabilities need an unprivileged component to *hold* them, so the privilege
+transition comes first; PQC is the self-contained finale. Each sub-phase
+gets its own design → plan → build cycle.
+
+### Phase 3a — Privilege drop to user space  *(done — 2026-06-14)*
+
+- **Goal:** the first transition to U-mode, a minimal `print`/`exit` syscall path, and proof the privilege boundary enforces.
+- **You learn:** the U/S boundary (`sstatus.SPP`/`SPIE`, `sret`), the `sscratch` trap-stack swap, `ecall` syscalls and the ABI, the confused-deputy guard and `SUM`, the PTE `U` bit.
+- **Done when:** `./tools/test-qemu.ps1` observes a U-mode task make a `print` syscall, exit cleanly, and a second U-mode task touching kernel memory contained — all in one boot, alongside the 2a/2b/2c milestones.
+
+### Phase 3b — Capabilities & IPC
+
+- **Goal:** unforgeable capability tokens, capability-checked syscalls, and synchronous message passing between two isolated user components (with blocking/wait queues and U-mode tasks in the run queue).
+- **You learn:** capabilities, IPC, per-address-space isolation, blocking.
+- **Done when:** two components run at least authority and communicate only through capability-checked IPC.
+
+### Phase 3c — PQC primitive
+
+- **Goal:** integrate an audited post-quantum crypto crate and expose one usable primitive (per ADR 0004).
+- **You learn:** integrating audited crypto into `no_std`, the `libs/crypto` crate.
+- **Done when:** a PQC primitive (e.g. ML-KEM keygen/encapsulation or ML-DSA verify) is usable and host-tested.
 
 ## Phase 4 — Real hardware
 
