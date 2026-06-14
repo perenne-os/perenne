@@ -33,7 +33,9 @@ impl Scheduler {
     /// slots and the current task. Returns `current` if nobody else is
     /// ready — the caller then keeps running.
     pub fn pick_next(&self) -> usize {
-        for offset in 1..=MAX_TASKS {
+        // 1..MAX_TASKS covers every slot except `current` (which is
+        // Running, never Ready); the fallback below returns `current`.
+        for offset in 1..MAX_TASKS {
             let i = (self.current + offset) % MAX_TASKS;
             if let Some(t) = &self.tasks[i] {
                 if t.state == TaskState::Ready {
@@ -180,10 +182,11 @@ pub fn yield_now() {
 
     if let Some((old, new)) = switch {
         // SAFETY: both pointers address `Context`s inside the 'static
-        // SCHED, valid for the whole program. Single hart + the disabled
-        // interrupts above mean no other code aliases them while the
-        // assembly runs. Execution resumes here when this task is picked
-        // again.
+        // SCHED, valid for the whole program. `next != current` above
+        // guarantees `old` and `new` are distinct slots, so they never
+        // alias. Single hart + the disabled interrupts above mean no
+        // other code touches them while the assembly runs. Execution
+        // resumes here when this task is picked again.
         unsafe { switch_context(old, new) };
     }
 

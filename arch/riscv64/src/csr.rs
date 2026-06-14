@@ -1,8 +1,8 @@
 //! Control and Status Register (CSR) accessors, hand-rolled.
 //!
 //! CSRs are per-hart special registers read/written with dedicated
-//! instructions (`csrr`, `csrw`, `csrs`). Only the ones Phase 2a
-//! actually calls get accessors; the trap entry assembly reads
+//! instructions (`csrr`, `csrw`, `csrs`). Only the CSRs the kernel
+//! actually uses get accessors; the trap entry assembly reads
 //! `sepc`/`scause`/`stval` directly into the [`crate::trap::TrapFrame`].
 
 use core::arch::asm;
