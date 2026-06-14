@@ -47,9 +47,10 @@ mod bare {
         // Phase 3a: run the embedded U-mode program to completion, twice.
         // The first task prints via a syscall and exits cleanly; the second
         // reaches into kernel memory and is contained. enter_user returns
-        // when each task ends. Interrupts are still off here (timer::start
-        // is below), so the user runs with no preemption — the focus is the
-        // privilege boundary, not scheduling.
+        // when each task ends. The user runs with sstatus.SIE = 1 (SPIE is
+        // forged on), but no timer can preempt it: sie.STIE is not armed
+        // until timer::start() below — so the focus here is the privilege
+        // boundary, not scheduling.
         let trap_top = core::ptr::addr_of!(TRAP_STACK) as usize + TASK_STACK;
         let user_sp = core::ptr::addr_of!(USER_STACK) as usize + USER_STACK_SIZE;
         match sched::enter_user(user_good, user_sp, trap_top) {

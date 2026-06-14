@@ -358,7 +358,8 @@ fn fatal(kind: &str, frame: &TrapFrame) -> ! {
 #[cfg(target_arch = "riscv64")]
 #[no_mangle]
 extern "C" fn trap_handler(frame: &mut TrapFrame) {
-    match decode(frame.scause) {
+    let cause = decode(frame.scause);
+    match cause {
         Cause::Breakpoint => {
             crate::println!("trap: breakpoint at {:#x}", frame.sepc);
             // ebreak doesn't advance the PC itself; without this, sret
@@ -385,7 +386,7 @@ extern "C" fn trap_handler(frame: &mut TrapFrame) {
         }
         Cause::InstructionPageFault | Cause::LoadPageFault if from_user(frame) => {
             // A U-mode task reached for memory it does not own: contain it.
-            crate::sched::terminate_user(crate::task::ExitReason::Killed(decode(frame.scause)));
+            crate::sched::terminate_user(crate::task::ExitReason::Killed(cause));
         }
         Cause::InstructionPageFault => fatal("instruction page fault", frame),
         Cause::LoadPageFault => fatal("load page fault", frame),
