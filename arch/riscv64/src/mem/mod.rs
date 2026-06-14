@@ -142,9 +142,10 @@ pub fn total_frames() -> usize {
 /// `print` syscall. Used by the confused-deputy guard.
 #[cfg(target_arch = "riscv64")]
 pub fn user_data_bounds() -> (usize, usize) {
-    // SAFETY: both are linker-script symbol addresses (read as addresses,
-    // never dereferenced here); the region is defined by kernel.ld.
-    unsafe { (sym!(__user_data_start), sym!(__user_data_end)) }
+    // Both are linker-script symbol addresses (taken via addr_of!, never
+    // dereferenced here); the region is defined by kernel.ld. No unsafe
+    // needed: addr_of! forms an address without reading the static.
+    (sym!(__user_data_start), sym!(__user_data_end))
 }
 
 #[cfg(test)]
