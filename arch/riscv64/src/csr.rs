@@ -81,3 +81,24 @@ pub unsafe fn satp_write(value: usize) {
         )
     };
 }
+
+/// Disable supervisor interrupts (`sstatus.SIE`, bit 1), returning
+/// whether they were previously enabled. The scheduler uses the return
+/// value to restore the caller's prior interrupt state after a context
+/// switch, so a task resumed from inside a trap handler does not
+/// accidentally run with interrupts unmasked mid-trap-return.
+///
+/// `csrrci` atomically reads the old `sstatus` and clears the bit.
+///
+/// # Safety
+/// Disabling interrupts is always memory-safe, but the caller owns the
+/// obligation to re-enable them (or restore the returned state) so the
+/// hart does not stay deaf to the timer forever.
+#[inline]
+pub unsafe fn sstatus_disable_interrupts() -> bool {
+    let prev: usize;
+    unsafe {
+        asm!("csrrci {}, sstatus, 0x2", out(reg) prev, options(nostack, nomem));
+    }
+    prev & 0x2 != 0
+}
