@@ -321,7 +321,13 @@ extern "C" fn trap_handler(frame: &mut TrapFrame) {
             // would re-execute it forever.
             frame.sepc += instruction_len_at(frame.sepc);
         }
-        Cause::SupervisorTimer => crate::timer::on_tick(),
+        Cause::SupervisorTimer => {
+            crate::timer::on_tick();
+            // Tick-policy hook: preempt the running task. The full
+            // register set is already saved in this TrapFrame; preempt()
+            // parks the handler's continuation and runs the next task.
+            crate::sched::preempt();
+        }
         Cause::InstructionPageFault => fatal("instruction page fault", frame),
         Cause::LoadPageFault => fatal("load page fault", frame),
         Cause::StorePageFault => {
