@@ -30,11 +30,11 @@ Decomposed into three sub-phases (2026-06-10), each with its own design → plan
 - **You learn:** physical vs. virtual addresses, page tables, the MMU.
 - **Done when:** `./tools/test-qemu.ps1` observes Sv39 paging active with W^X section permissions proven, frame alloc/free round-trip, and all Phase 2a milestones — in one boot.
 
-### Phase 2c — Basic scheduling
+### Phase 2c — Basic scheduling  *(done — 2026-06-14)*
 
 - **Goal:** context switching between simple in-kernel tasks, driven by the timer from 2a.
 - **You learn:** context switching, run queues, the tick-policy hook.
-- **Done when:** the kernel switches between simple tasks (the original Phase 2 exit criterion).
+- **Done when:** `./tools/test-qemu.ps1` observes three tasks round-robin cooperatively, then a non-yielding task preempted by the timer — all in one boot, alongside the 2a/2b milestones.
 
 ## Phase 3 — Security spine
 
