@@ -63,3 +63,14 @@ Plain-language definitions of terms used throughout these docs. Aimed at someone
 - **Yield** — a task voluntarily giving up the CPU to let another run; in this kernel, `yield_now()`.
 - **Time slice / tick-policy hook** — the decision made on each timer tick about whether to preempt the running task; the point where the heartbeat becomes a scheduler clock.
 - **Trampoline** — a tiny stub a new task first lands in: it sets up the task's running conditions (here, enabling interrupts) before jumping to the real entry function.
+- **System call (syscall)** — the controlled entry by which an unprivileged user task requests a service from the kernel; in this kernel, an `ecall` from U-mode decoded by number (`print`, `exit`).
+- **Syscall ABI** — the register convention for a syscall: here `a7` selects the call, `a0..` pass arguments, and `a0` returns the result.
+- **`sret`** — the RISC-V instruction that returns from a trap to a lower or equal privilege; reading `sstatus.SPP` decides whether it lands in U-mode or S-mode.
+- **`sstatus.SPP`** — the "supervisor previous privilege" bit: records whether a trap came from U-mode (0) or S-mode (1), and selects where `sret` returns.
+- **`sstatus.SPIE` / `SIE`** — the saved and live supervisor interrupt-enable bits; `sret` restores `SIE` from `SPIE`, so a task entered with `SPIE = 1` resumes with interrupts on.
+- **`sscratch`** — a scratch CSR used as a privilege-aware stack pointer: it holds the kernel trap-stack top while a user task runs and 0 while the kernel runs, letting the trap entry swap to a trusted stack only when needed.
+- **Trap stack / kernel stack** — the trusted stack a trap from U-mode must switch to before the kernel touches it, since the interrupted user stack is untrusted.
+- **`sstatus.SUM`** — "permit Supervisor User Memory access": when 0 (the default), S-mode accesses to user pages fault; the `print` syscall opens it briefly for a validated copy.
+- **Confused deputy** — a privileged component tricked into misusing its authority on behalf of a less-privileged caller; here, the kernel reading a kernel address supplied as a user `print` pointer — prevented by validating the pointer against the user's own memory.
+- **Task termination / containment** — ending a task cleanly (`exit`) or because it faulted (killed); a U-mode fault contains just the task, leaving the kernel running.
+- **U bit (PTE)** — the page-table entry flag that makes a page accessible to U-mode; kernel pages omit it, so a user touch faults.

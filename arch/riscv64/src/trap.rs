@@ -47,6 +47,8 @@ pub enum Cause {
     /// Store to an unmapped/unwritable page (code 15) — what the W^X
     /// probe deliberately triggers.
     StorePageFault,
+    /// `ecall` executed from U-mode (exception code 8) — a syscall.
+    UserEcall,
     /// Anything we don't handle yet.
     Unknown { interrupt: bool, code: usize },
 }
@@ -65,6 +67,7 @@ pub fn decode(scause: usize) -> Cause {
         (false, 12) => Cause::InstructionPageFault,
         (false, 13) => Cause::LoadPageFault,
         (false, 15) => Cause::StorePageFault,
+        (false, 8) => Cause::UserEcall,
         _ => Cause::Unknown { interrupt, code },
     }
 }
@@ -142,6 +145,12 @@ mod tests {
     }
 
     #[test]
+    fn decodes_user_ecall() {
+        // Exception code 8 = environment call from U-mode.
+        assert_eq!(decode(8), Cause::UserEcall);
+    }
+
+    #[test]
     fn page_fault_codes_as_interrupts_stay_unknown() {
         // Interrupt bit + code 13 is NOT a load page fault.
         assert_eq!(
@@ -152,10 +161,17 @@ mod tests {
 }
 
 // The assembly trap entry. Layout contract: see [`TrapFrame`].
-// 288 = size_of::<TrapFrame>() (280) rounded up to keep `sp` 16-aligned
-// per the RISC-V ABI. `t0` (= x5) is used as scratch only *after* its
-// slot is saved, and on the way out only *before* its slot is restored.
-// `x2` (sp) is restored last — that load releases the frame.
+// 288 = size_of::<TrapFrame>() (280) rounded up to keep `sp` 16-aligned.
+//
+// Stack swap (Phase 3a): `sscratch` holds the kernel trap-stack top while a
+// user task runs and `0` while the kernel runs. On entry we swap sp and
+// sscratch:
+//   - from U-mode: sp <- trap-stack top, sscratch <- user sp (saved into
+//     the frame's x2 slot); sscratch is then reset to 0 for the handler.
+//   - from S-mode: sscratch was 0, so the swap puts 0 in sp; we detect
+//     that, swap back, and run on the current kernel stack exactly as in 2c.
+// On exit, if returning to U-mode (SPP == 0) we restore sscratch to the
+// trap-stack top so the next trap from the user swaps correctly.
 #[cfg(target_arch = "riscv64")]
 core::arch::global_asm!(
     r#"
@@ -163,11 +179,23 @@ core::arch::global_asm!(
     .align 2                # stvec requires 4-byte alignment (mode bits = 00, direct)
     .global __trap_entry
 __trap_entry:
+    csrrw sp, sscratch, sp  # swap sp <-> sscratch
+    bnez sp, 1f             # sp != 0 => trapped from U-mode (sp = trap-stack top)
+    csrrw sp, sscratch, sp  # from S-mode: undo the swap (sp = kernel sp, sscratch = 0)
     addi sp, sp, -288
+    sd t0, 32(sp)           # free t0 (x5 slot) as scratch
+    addi t0, sp, 288        # pre-trap sp (kernel): just above this frame
+    j 2f
+1:                          # from U-mode: sp = trap-stack top, sscratch = user sp
+    addi sp, sp, -288
+    sd t0, 32(sp)           # free t0 (x5 slot) as scratch
+    csrr t0, sscratch       # t0 = user sp (the pre-trap sp)
+    csrw sscratch, zero     # kernel now running: restore the 0 sentinel
+2:                          # common path: t0 = pre-trap sp, frame allocated, x5 saved
+    sd t0, 8(sp)            # x2 (pre-trap sp) into the frame
     sd x1,  0(sp)
     sd x3,  16(sp)
     sd x4,  24(sp)
-    sd x5,  32(sp)
     sd x6,  40(sp)
     sd x7,  48(sp)
     sd x8,  56(sp)
@@ -194,8 +222,6 @@ __trap_entry:
     sd x29, 224(sp)
     sd x30, 232(sp)
     sd x31, 240(sp)
-    addi t0, sp, 288        # reconstruct the pre-trap sp (x2)
-    sd t0, 8(sp)
     csrr t0, sepc
     sd t0, 248(sp)
     csrr t0, sstatus
@@ -208,8 +234,13 @@ __trap_entry:
     call trap_handler
     ld t0, 248(sp)          # handler may have advanced sepc
     csrw sepc, t0
-    ld t0, 256(sp)
+    ld t0, 256(sp)          # restored sstatus; t0 = its value
     csrw sstatus, t0
+    andi t1, t0, 0x100      # SPP (bit 8): 0 => returning to U-mode
+    bnez t1, 3f             # SPP = 1 (to S-mode): leave sscratch = 0
+    addi t1, sp, 288        # trap-stack top (this frame sits at top - 288)
+    csrw sscratch, t1       # arm sscratch for the next trap from the user
+3:
     ld x1,  0(sp)
     ld x3,  16(sp)
     ld x4,  24(sp)
@@ -240,7 +271,7 @@ __trap_entry:
     ld x29, 224(sp)
     ld x30, 232(sp)
     ld x31, 240(sp)
-    ld x2,  8(sp)           # restore original sp LAST; frame is gone
+    ld x2,  8(sp)           # restore original sp LAST (user sp or kernel sp)
     sret
 "#
 );
@@ -281,6 +312,10 @@ pub fn init() {
     // SAFETY: __trap_entry is the real entry defined above; .align 2
     // gives the required 4-byte alignment.
     unsafe { crate::csr::stvec_write(__trap_entry as *const () as usize) };
+    // sscratch == 0 is the "kernel is on a kernel stack" sentinel the
+    // entry's stack-swap relies on; make it true before any trap fires.
+    // SAFETY: writing 0 is the documented sentinel; no user task runs yet.
+    unsafe { crate::csr::sscratch_write(0) };
 }
 
 /// Length of the instruction at `addr`, for advancing `sepc` past it.
@@ -291,6 +326,15 @@ fn instruction_len_at(addr: usize) -> usize {
     // physically addressed before), so the read is always legal.
     let parcel = unsafe { core::ptr::read_volatile(addr as *const u16) };
     instruction_len(parcel)
+}
+
+/// `sstatus.SPP` (bit 8) records the privilege the hart was in when the
+/// trap fired: 0 = U-mode, 1 = S-mode. A trap "from user" is contained
+/// (the task is killed); a fault from the kernel itself is fatal-to-the-
+/// kernel, except the deliberate S-mode W^X probe.
+#[cfg(target_arch = "riscv64")]
+fn from_user(frame: &TrapFrame) -> bool {
+    frame.sstatus & (1 << 8) == 0
 }
 
 /// Unrecoverable trap: print everything we know, then panic. `stval`
@@ -314,7 +358,8 @@ fn fatal(kind: &str, frame: &TrapFrame) -> ! {
 #[cfg(target_arch = "riscv64")]
 #[no_mangle]
 extern "C" fn trap_handler(frame: &mut TrapFrame) {
-    match decode(frame.scause) {
+    let cause = decode(frame.scause);
+    match cause {
         Cause::Breakpoint => {
             crate::println!("trap: breakpoint at {:#x}", frame.sepc);
             // ebreak doesn't advance the PC itself; without this, sret
@@ -328,10 +373,27 @@ extern "C" fn trap_handler(frame: &mut TrapFrame) {
             // parks the handler's continuation and runs the next task.
             crate::sched::preempt();
         }
+        Cause::UserEcall => {
+            // A syscall from U-mode. ecall does not advance the PC, so on
+            // Resume we step sepc past the 4-byte ecall; Exit never returns
+            // here (terminate_user switches back to kmain).
+            match crate::syscall::dispatch(frame) {
+                crate::syscall::Outcome::Resume => frame.sepc += 4,
+                crate::syscall::Outcome::Exit(code) => {
+                    crate::sched::terminate_user(crate::task::ExitReason::Exited(code))
+                }
+            }
+        }
+        Cause::InstructionPageFault | Cause::LoadPageFault if from_user(frame) => {
+            // A U-mode task reached for memory it does not own: contain it.
+            crate::sched::terminate_user(crate::task::ExitReason::Killed(cause));
+        }
         Cause::InstructionPageFault => fatal("instruction page fault", frame),
         Cause::LoadPageFault => fatal("load page fault", frame),
         Cause::StorePageFault => {
-            if EXPECTING_WX_FAULT.swap(false, Ordering::AcqRel) {
+            if from_user(frame) {
+                crate::sched::terminate_user(crate::task::ExitReason::Killed(Cause::StorePageFault));
+            } else if EXPECTING_WX_FAULT.swap(false, Ordering::AcqRel) {
                 crate::println!("trap: W^X store fault at {:#x} (probe)", frame.stval);
                 // Like the breakpoint: skip the faulting store so
                 // execution resumes after the probe.

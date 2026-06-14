@@ -67,6 +67,10 @@ extern "C" {
     static __stack_start: u8;
     static __stack_top: u8;
     static __kernel_end: u8;
+    static __user_text_start: u8;
+    static __user_text_end: u8;
+    static __user_data_start: u8;
+    static __user_data_end: u8;
 }
 
 /// The address of a linker-script symbol. Only the address is
@@ -89,7 +93,7 @@ macro_rules! sym {
 /// while the world is being remapped).
 #[cfg(target_arch = "riscv64")]
 pub fn init() {
-    use paging::{PTE_G, PTE_R, PTE_W, PTE_X};
+    use paging::{PTE_G, PTE_R, PTE_U, PTE_W, PTE_X};
 
     // SAFETY: all sym! calls read linker-script symbol addresses (not
     // their contents) from kernel.ld; the ranges are 4 KiB-aligned by
@@ -110,6 +114,12 @@ pub fn init() {
         // Free RAM mapped eagerly so allocated frames are immediately
         // usable — no fault-and-map machinery in 2b.
         paging::map_range(root, free_ram.0, free_ram.1, PTE_R | PTE_W | PTE_G);
+        // Phase 3a: the embedded user image gets the U bit so a U-mode
+        // task can fetch/read/write it. NOT global (G): user mappings are
+        // not shared across address spaces. text R-X-U, data RW-U. Empty
+        // until kmain places code/data here (start == end maps nothing).
+        paging::map_range(root, sym!(__user_text_start), sym!(__user_text_end), PTE_R | PTE_X | PTE_U);
+        paging::map_range(root, sym!(__user_data_start), sym!(__user_data_end), PTE_R | PTE_W | PTE_U);
         // SAFETY: everything the kernel touches is now identity-mapped.
         crate::csr::satp_write(crate::csr::SATP_MODE_SV39 | (root as usize >> 12));
     }
@@ -125,6 +135,17 @@ pub fn free_frames() -> usize {
 #[cfg(target_arch = "riscv64")]
 pub fn total_frames() -> usize {
     frame::ALLOCATOR.with(|a| a.total_frames())
+}
+
+/// Half-open bounds `[start, end)` of the `.user_data` region — the only
+/// memory a `U`-mode task may legitimately ask the kernel to read in a
+/// `print` syscall. Used by the confused-deputy guard.
+#[cfg(target_arch = "riscv64")]
+pub fn user_data_bounds() -> (usize, usize) {
+    // Both are linker-script symbol addresses (taken via addr_of!, never
+    // dereferenced here); the region is defined by kernel.ld. No unsafe
+    // needed: addr_of! forms an address without reading the static.
+    (sym!(__user_data_start), sym!(__user_data_end))
 }
 
 #[cfg(test)]

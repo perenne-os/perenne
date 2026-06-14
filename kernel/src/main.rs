@@ -18,7 +18,7 @@ mod bare {
     use core::panic::PanicInfo;
 
     use kernel::GREETING;
-    use kernel_arch_riscv64::{mem, println, sched, timer, trap};
+    use kernel_arch_riscv64::{mem, println, sched, task::ExitReason, timer, trap};
     use kernel_common::PROJECT_NAME;
 
     /// Rust entry, called from the boot assembly with the arguments
@@ -26,7 +26,7 @@ mod bare {
     #[no_mangle]
     extern "C" fn kmain(hartid: usize, _dtb: usize) -> ! {
         println!();
-        println!("{GREETING} from {PROJECT_NAME} - Phase 2c (hart {hartid})");
+        println!("{GREETING} from {PROJECT_NAME} - Phase 3a (hart {hartid})");
 
         trap::init();
         // Deliberate breakpoint: proves the handler catches an exception
@@ -43,6 +43,26 @@ mod bare {
         );
         wx_probe();
         frame_roundtrip();
+
+        // Phase 3a: run the embedded U-mode program to completion, twice.
+        // The first task prints via a syscall and exits cleanly; the second
+        // reaches into kernel memory and is contained. enter_user returns
+        // when each task ends. The user runs with sstatus.SIE = 1 (SPIE is
+        // forged on), but no timer can preempt it: sie.STIE is not armed
+        // until timer::start() below — so the focus here is the privilege
+        // boundary, not scheduling.
+        let trap_top = core::ptr::addr_of!(TRAP_STACK) as usize + TASK_STACK;
+        let user_sp = core::ptr::addr_of!(USER_STACK) as usize + USER_STACK_SIZE;
+        match sched::enter_user(user_good, user_sp, trap_top) {
+            ExitReason::Exited(code) => println!("user: task exited with code {code}"),
+            ExitReason::Killed(c) => println!("user: task killed by {c:?} (unexpected)"),
+        }
+        match sched::enter_user(user_bad, user_sp, trap_top) {
+            ExitReason::Killed(_) => println!("user: task killed by load page fault"),
+            ExitReason::Exited(code) => {
+                println!("user: task exited with code {code} (boundary NOT enforced!)")
+            }
+        }
 
         // Phase 2c: spawn three tasks and hand the CPU to the scheduler.
         // Interrupts are enabled here (timer::start) BEFORE entering, so
@@ -117,6 +137,87 @@ mod bare {
     static mut STACK_A: [u8; TASK_STACK] = [0; TASK_STACK];
     static mut STACK_B: [u8; TASK_STACK] = [0; TASK_STACK];
     static mut STACK_C: [u8; TASK_STACK] = [0; TASK_STACK];
+
+    /// Trusted kernel stack that U-mode traps land on (via the sscratch
+    /// swap). Kernel memory — never mapped U.
+    static mut TRAP_STACK: [u8; TASK_STACK] = [0; TASK_STACK];
+
+    /// The U-mode task's stack. Lives in `.user_data` so mem::init maps it
+    /// RW-U; sized separately from kernel stacks.
+    const USER_STACK_SIZE: usize = 8 * 1024;
+    #[link_section = ".user_data"]
+    static mut USER_STACK: [u8; USER_STACK_SIZE] = [0; USER_STACK_SIZE];
+
+    /// The message the good user task asks the kernel to print. In
+    /// `.user_data` (R-U) so the confused-deputy guard accepts its pointer
+    /// and the SUM-window copy can read it. A `.rodata` string would be
+    /// rejected (it is outside the user region) — that is the point. The
+    /// "user: " prefix is part of the message so the smoke test can grep
+    /// for the kernel's verbatim echo. Length is exact: 27 bytes.
+    #[link_section = ".user_data"]
+    static USER_MSG: [u8; 27] = *b"user: hello from user mode\n";
+
+    /// Print syscall (a7 = 1): a0 = ptr, a1 = len. `inline(always)` so it
+    /// folds into the user entry and the `.user_text` page stays
+    /// self-contained (no call into kernel `.text`). a0 is in/out: the
+    /// kernel returns the byte count there, which we discard.
+    ///
+    /// # Safety
+    /// `ptr`/`len` must describe the buffer the kernel should print; the
+    /// kernel validates the range before reading it.
+    #[inline(always)]
+    unsafe fn sys_print(ptr: *const u8, len: usize) {
+        core::arch::asm!(
+            "ecall",
+            in("a7") 1usize,
+            inout("a0") ptr => _,
+            in("a1") len,
+            options(nostack),
+        );
+    }
+
+    /// Exit syscall (a7 = 2): a0 = code. Never returns.
+    ///
+    /// # Safety
+    /// Always sound; the kernel terminates the task and never resumes it.
+    #[inline(always)]
+    unsafe fn sys_exit(code: usize) -> ! {
+        core::arch::asm!(
+            "ecall",
+            in("a7") 2usize,
+            in("a0") code,
+            options(nostack, noreturn),
+        );
+    }
+
+    /// The well-behaved U-mode task: print a message, then exit cleanly.
+    /// In `.user_text` (R-X-U); calls only the inlined syscall stubs, so it
+    /// never touches a non-U page.
+    #[no_mangle]
+    #[link_section = ".user_text"]
+    extern "C" fn user_good() -> ! {
+        // SAFETY: USER_MSG is in .user_data (R-U); we only take its address
+        // (no U-mode read of it) — the kernel validates and reads it.
+        unsafe {
+            sys_print(USER_MSG.as_ptr(), USER_MSG.len());
+            sys_exit(0)
+        }
+    }
+
+    /// The misbehaving U-mode task: read a kernel address. The kernel page
+    /// is mapped non-U, so the U-mode load faults and the kernel contains
+    /// the task (it never reaches the exit below).
+    #[no_mangle]
+    #[link_section = ".user_text"]
+    extern "C" fn user_bad() -> ! {
+        // 0x80200000 is the kernel .text base (mapped R-X-G, no U bit).
+        let kernel_addr = 0x8020_0000 as *const u8;
+        // SAFETY: this is the deliberate boundary violation. The volatile
+        // read faults in U-mode before it can complete; control never
+        // returns to this task.
+        let _ = unsafe { core::ptr::read_volatile(kernel_addr) };
+        unsafe { sys_exit(0) } // unreachable: the read above faults first
+    }
 
     /// Set by task C when it stops yielding. A and B only ever observe it
     /// as `true` if a timer preemption schedules them while C hogs the

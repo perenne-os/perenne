@@ -102,3 +102,50 @@ pub unsafe fn sstatus_disable_interrupts() -> bool {
     }
     prev & 0x2 != 0
 }
+
+/// Read the whole `sstatus` register. The user-context forge reads it to
+/// derive the value to load before `sret`ing into U-mode (clearing SPP,
+/// setting SPIE) without disturbing unrelated bits.
+#[inline]
+pub fn sstatus_read() -> usize {
+    let value: usize;
+    // SAFETY: a plain CSR read has no memory effects.
+    unsafe { asm!("csrr {}, sstatus", out(reg) value, options(nostack, nomem)) };
+    value
+}
+
+/// Write `sscratch`. The trap entry uses `sscratch` as a privilege-aware
+/// stack pointer: the kernel trap-stack top while a user task runs, and
+/// `0` (the sentinel meaning "already on a kernel stack") while the kernel
+/// runs.
+///
+/// # Safety
+/// A wrong value corrupts the trap-entry stack swap: a non-zero value
+/// while the kernel runs would make the next S-mode trap try to swap to a
+/// bogus stack. Callers must restore `0` before the kernel resumes.
+#[inline]
+pub unsafe fn sscratch_write(value: usize) {
+    unsafe { asm!("csrw sscratch, {}", in(reg) value, options(nostack, nomem)) };
+}
+
+/// Set `sstatus.SUM` (bit 18), permitting S-mode to read/write U-mode
+/// pages. Opened only around a validated copy in the `print` syscall.
+///
+/// # Safety
+/// While SUM is set the kernel can dereference user pages, so the caller
+/// must have validated the pointer first and must clear SUM immediately
+/// after the copy (see [`sstatus_clear_sum`]).
+#[inline]
+pub unsafe fn sstatus_set_sum() {
+    unsafe { asm!("csrs sstatus, {}", in(reg) 1usize << 18, options(nostack, nomem)) };
+}
+
+/// Clear `sstatus.SUM` (bit 18): S-mode accesses to U-mode pages fault
+/// again. The default state — only the `print` copy window deviates.
+///
+/// # Safety
+/// Always memory-safe; pairs with [`sstatus_set_sum`].
+#[inline]
+pub unsafe fn sstatus_clear_sum() {
+    unsafe { asm!("csrc sstatus, {}", in(reg) 1usize << 18, options(nostack, nomem)) };
+}

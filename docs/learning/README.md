@@ -15,3 +15,4 @@ This folder holds the author's learning notes as systems-programming concepts cl
 - [0003 — Traps and the timer heartbeat (Phase 2a)](0003-traps-and-interrupts.md)
 - [0004 — Memory and paging (Phase 2b)](0004-memory-and-paging.md)
 - [0005 — Scheduling and context switching (Phase 2c)](0005-scheduling-and-context-switching.md)
+- [0006 — User mode and system calls (Phase 3a)](0006-user-mode-and-syscalls.md)

@@ -7,7 +7,12 @@
 //! `preempt` — everything that touches CSRs, assembly, or the live
 //! console.
 
-use crate::task::{Context, Task, TaskState};
+use crate::task::{Task, TaskState};
+// `Context` is named only by the gated switch code and the host tests
+// (the pure run queue holds `Task`s, not `Context`s), so gate the import
+// to those two configs to keep the host lib build warning-free.
+#[cfg(any(target_arch = "riscv64", test))]
+use crate::task::Context;
 
 /// Maximum concurrent tasks: the three demo tasks plus one slot of
 /// headroom. The bootstrap (`kmain`) context is NOT a slot — it is a
@@ -230,6 +235,98 @@ pub fn enter() -> ! {
 #[cfg(target_arch = "riscv64")]
 pub fn preempt() {
     yield_now();
+}
+
+// First entry into U-mode. Reached via `switch_context` "returning" into
+// it with the launchpad context built by `enter_user`:
+//   s0 = user entry (-> sepc), s1 = user sp, s2 = user sstatus,
+//   sp = kernel trap-stack top (we are running on it now).
+// We arm sscratch with the trap-stack top (so the user's first trap swaps
+// onto it), load the user CSRs, switch to the user stack, and `sret`.
+#[cfg(target_arch = "riscv64")]
+core::arch::global_asm!(
+    r#"
+    .section .text
+    .global enter_user_asm
+enter_user_asm:
+    csrw sscratch, sp       # sscratch = trap-stack top (for the U->S trap)
+    csrw sepc, s0           # user entry point
+    csrw sstatus, s2        # SPP = 0, SPIE = 1
+    mv sp, s1               # switch to the user stack
+    sret                    # -> U-mode at the entry point
+"#
+);
+
+#[cfg(target_arch = "riscv64")]
+extern "C" {
+    fn enter_user_asm();
+}
+
+#[cfg(target_arch = "riscv64")]
+use crate::task::ExitReason;
+
+/// The kernel context to resume when the user task ends. `enter_user`
+/// saves `kmain`'s registers here; `terminate_user` restores them, so
+/// `enter_user` returns to its caller. Single hart, mutated only with
+/// interrupts disabled.
+#[cfg(target_arch = "riscv64")]
+static mut USER_RETURN: Context = Context::zeroed();
+
+/// Set by `terminate_user`, read by `enter_user` after it resumes.
+#[cfg(target_arch = "riscv64")]
+static mut USER_EXIT: ExitReason = ExitReason::Exited(0);
+
+/// Run a single U-mode task to completion. Builds a launchpad context that
+/// `switch_context` "returns" into (landing in `enter_user_asm`, which
+/// `sret`s to U-mode), and saves `kmain`'s context so the termination path
+/// can switch back. Returns the reason the task stopped.
+///
+/// `user_sp` must be the (16-aligned) top of a `U`-mapped stack; `entry`
+/// must live in a `U`-mapped, executable page; `trap_stack_top` is the top
+/// of a trusted kernel stack the user's traps land on.
+#[cfg(target_arch = "riscv64")]
+pub fn enter_user(entry: extern "C" fn() -> !, user_sp: usize, trap_stack_top: usize) -> ExitReason {
+    // SAFETY: the launch handshake mutates the gated statics and the live
+    // CSRs; interrupts are off so no trap re-enters mid-handshake.
+    let _ = unsafe { crate::csr::sstatus_disable_interrupts() };
+
+    let mut launch = Context::zeroed();
+    launch.ra = enter_user_asm as *const () as usize;
+    launch.sp = trap_stack_top & !0xF;
+    launch.s[0] = entry as *const () as usize; // -> sepc
+    launch.s[1] = user_sp & !0xF; // -> user sp
+    launch.s[2] = crate::task::user_sstatus(crate::csr::sstatus_read()); // -> sstatus
+
+    // SAFETY: USER_RETURN is a 'static save target; `launch` is a valid
+    // launchpad. switch_context saves kmain into USER_RETURN and resumes
+    // in enter_user_asm. We return here only when terminate_user restores
+    // USER_RETURN.
+    unsafe {
+        switch_context(core::ptr::addr_of_mut!(USER_RETURN), &launch);
+        core::ptr::read(core::ptr::addr_of!(USER_EXIT))
+    }
+}
+
+/// End the running U-mode task: record `reason`, drop `sscratch` back to
+/// the kernel sentinel, and switch to the context `enter_user` parked.
+/// Never returns to the caller (the trap handler) — control resumes inside
+/// `enter_user`. Called from the trap handler for `exit` and fatal U-mode
+/// faults.
+#[cfg(target_arch = "riscv64")]
+pub fn terminate_user(reason: ExitReason) -> ! {
+    // SAFETY: single hart, interrupts off inside the trap handler. Record
+    // the reason, reset the sscratch sentinel (the kernel is resuming),
+    // and switch into kmain's parked context via a throwaway save slot.
+    unsafe {
+        core::ptr::write(core::ptr::addr_of_mut!(USER_EXIT), reason);
+        crate::csr::sscratch_write(0);
+        let mut throwaway = Context::zeroed();
+        switch_context(
+            core::ptr::addr_of_mut!(throwaway),
+            core::ptr::addr_of!(USER_RETURN),
+        );
+    }
+    unreachable!("terminate_user resumes inside enter_user, never here")
 }
 
 #[cfg(test)]
