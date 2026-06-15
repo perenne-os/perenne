@@ -14,11 +14,9 @@ use crate::task::{Task, TaskState};
 #[cfg(any(target_arch = "riscv64", test))]
 use crate::task::Context;
 
-/// Maximum concurrent tasks: the three demo tasks plus one slot of
-/// headroom. The bootstrap (`kmain`) context is NOT a slot — it is a
-/// throwaway `Context` used only for the first switch (see `enter`), so
-/// the rotation is purely among the spawned tasks.
-pub const MAX_TASKS: usize = 4;
+/// Maximum concurrent tasks: the 3b-i demo runs five (idle + four U-mode
+/// tasks) plus one slot of headroom.
+pub const MAX_TASKS: usize = 6;
 
 /// The run queue: a fixed array of optional tasks and the index of the
 /// one currently running.
@@ -30,7 +28,7 @@ pub struct Scheduler {
 impl Scheduler {
     /// An empty scheduler; `spawn` fills slots and `enter` starts it.
     pub const fn new() -> Self {
-        Self { tasks: [None, None, None, None], current: 0 }
+        Self { tasks: [None, None, None, None, None, None], current: 0 }
     }
 
     /// Index of the next task to run after `current`, round-robin: scan
@@ -114,12 +112,14 @@ extern "C" {
     fn task_trampoline();
 }
 
-/// Reached only if a task's entry function returns — a Phase 2c bug
-/// (entries must loop forever; task exit is deferred).
+/// Reached only if a *kernel* task's entry function returns. Kernel tasks
+/// (entered via `task_trampoline`) must loop forever — there is no exit path
+/// for them. (U-mode tasks exit cleanly via the `exit` syscall →
+/// `exit_current`; this trampoline is not on their path.)
 #[cfg(target_arch = "riscv64")]
 #[no_mangle]
 extern "C" fn task_has_returned() -> ! {
-    panic!("task entry returned (task exit is not implemented in Phase 2c)");
+    panic!("kernel task entry returned (kernel tasks must loop forever)");
 }
 
 /// The kernel's one scheduler. Lives in a `SingleHartCell` (the same
@@ -237,18 +237,19 @@ pub fn preempt() {
     yield_now();
 }
 
-// First entry into U-mode. Reached via `switch_context` "returning" into
-// it with the launchpad context built by `enter_user`:
-//   s0 = user entry (-> sepc), s1 = user sp, s2 = user sstatus,
-//   sp = kernel trap-stack top (we are running on it now).
-// We arm sscratch with the trap-stack top (so the user's first trap swaps
-// onto it), load the user CSRs, switch to the user stack, and `sret`.
+// First entry into U-mode for a freshly spawned U-mode task. Reached via
+// `switch_context` "returning" into it with the context `spawn_user`
+// forged: s0 = user entry (-> sepc), s1 = user sp, s2 = user sstatus,
+// sp = this task's kernel/trap-stack top (we run on it now). We arm
+// sscratch with that top (so the user's first trap swaps onto it), load the
+// user CSRs, switch to the user stack, and `sret`. The U-mode analogue of
+// `task_trampoline`.
 #[cfg(target_arch = "riscv64")]
 core::arch::global_asm!(
     r#"
     .section .text
-    .global enter_user_asm
-enter_user_asm:
+    .global user_trampoline
+user_trampoline:
     csrw sscratch, sp       # sscratch = trap-stack top (for the U->S trap)
     csrw sepc, s0           # user entry point
     csrw sstatus, s2        # SPP = 0, SPIE = 1
@@ -259,74 +260,82 @@ enter_user_asm:
 
 #[cfg(target_arch = "riscv64")]
 extern "C" {
-    fn enter_user_asm();
+    fn user_trampoline();
 }
 
 #[cfg(target_arch = "riscv64")]
 use crate::task::ExitReason;
 
-/// The kernel context to resume when the user task ends. `enter_user`
-/// saves `kmain`'s registers here; `terminate_user` restores them, so
-/// `enter_user` returns to its caller. Single hart, mutated only with
-/// interrupts disabled.
+/// Register a U-mode task: forge a `Ready` slot whose first `switch_context`
+/// lands in `user_trampoline` and `sret`s to U-mode. `entry` must live in a
+/// `U`-mapped executable page; `user_sp` is the top of a `U`-mapped stack;
+/// `kstack_top` is the top of a trusted kernel stack the task's traps land
+/// on. Panics if there is no free slot (a static configuration bug).
 #[cfg(target_arch = "riscv64")]
-static mut USER_RETURN: Context = Context::zeroed();
-
-/// Set by `terminate_user`, read by `enter_user` after it resumes.
-#[cfg(target_arch = "riscv64")]
-static mut USER_EXIT: ExitReason = ExitReason::Exited(0);
-
-/// Run a single U-mode task to completion. Builds a launchpad context that
-/// `switch_context` "returns" into (landing in `enter_user_asm`, which
-/// `sret`s to U-mode), and saves `kmain`'s context so the termination path
-/// can switch back. Returns the reason the task stopped.
-///
-/// `user_sp` must be the (16-aligned) top of a `U`-mapped stack; `entry`
-/// must live in a `U`-mapped, executable page; `trap_stack_top` is the top
-/// of a trusted kernel stack the user's traps land on.
-#[cfg(target_arch = "riscv64")]
-pub fn enter_user(entry: extern "C" fn() -> !, user_sp: usize, trap_stack_top: usize) -> ExitReason {
-    // SAFETY: the launch handshake mutates the gated statics and the live
-    // CSRs; interrupts are off so no trap re-enters mid-handshake.
-    let _ = unsafe { crate::csr::sstatus_disable_interrupts() };
-
-    let mut launch = Context::zeroed();
-    launch.ra = enter_user_asm as *const () as usize;
-    launch.sp = trap_stack_top & !0xF;
-    launch.s[0] = entry as *const () as usize; // -> sepc
-    launch.s[1] = user_sp & !0xF; // -> user sp
-    launch.s[2] = crate::task::user_sstatus(crate::csr::sstatus_read()); // -> sstatus
-
-    // SAFETY: USER_RETURN is a 'static save target; `launch` is a valid
-    // launchpad. switch_context saves kmain into USER_RETURN and resumes
-    // in enter_user_asm. We return here only when terminate_user restores
-    // USER_RETURN.
-    unsafe {
-        switch_context(core::ptr::addr_of_mut!(USER_RETURN), &launch);
-        core::ptr::read(core::ptr::addr_of!(USER_EXIT))
-    }
+pub fn spawn_user(
+    name: &'static str,
+    entry: extern "C" fn() -> !,
+    user_sp: usize,
+    kstack_top: usize,
+) {
+    SCHED.with(|s| {
+        let slot = s
+            .tasks
+            .iter()
+            .position(Option::is_none)
+            .expect("scheduler full");
+        let context = crate::task::forge_user_context(
+            user_trampoline as *const () as usize,
+            entry as *const () as usize,
+            user_sp,
+            kstack_top,
+            crate::task::user_sstatus(crate::csr::sstatus_read()),
+        );
+        s.tasks[slot] = Some(Task {
+            context,
+            state: TaskState::Ready,
+            stack_top: kstack_top,
+            name,
+        });
+    });
 }
 
-/// End the running U-mode task: record `reason`, drop `sscratch` back to
-/// the kernel sentinel, and switch to the context `enter_user` parked.
-/// Never returns to the caller (the trap handler) — control resumes inside
-/// `enter_user`. Called from the trap handler for `exit` and fatal U-mode
-/// faults.
+/// Terminate the running task and switch to the next ready one. Called from
+/// the trap handler for the `exit` syscall (`Exited`) and fatal U-mode
+/// faults (`Killed`). Prints the outcome, marks the current slot `Exited`,
+/// and `switch_context`s away — never resuming the dead slot, so its trap
+/// frame and stacks are simply abandoned (reaping is deferred). The idle
+/// task is always `Ready`, so a successor always exists.
 #[cfg(target_arch = "riscv64")]
-pub fn terminate_user(reason: ExitReason) -> ! {
-    // SAFETY: single hart, interrupts off inside the trap handler. Record
-    // the reason, reset the sscratch sentinel (the kernel is resuming),
-    // and switch into kmain's parked context via a throwaway save slot.
-    unsafe {
-        core::ptr::write(core::ptr::addr_of_mut!(USER_EXIT), reason);
-        crate::csr::sscratch_write(0);
-        let mut throwaway = Context::zeroed();
-        switch_context(
-            core::ptr::addr_of_mut!(throwaway),
-            core::ptr::addr_of!(USER_RETURN),
-        );
-    }
-    unreachable!("terminate_user resumes inside enter_user, never here")
+pub fn exit_current(reason: ExitReason) -> ! {
+    // SAFETY: runs inside the trap handler with interrupts off; single hart.
+    let switch = SCHED.with(|s| {
+        let current = s.current;
+        match reason {
+            ExitReason::Exited(code) => {
+                crate::println!("sched: task '{}' exited (code {code})", s.tasks[current].as_ref().unwrap().name)
+            }
+            ExitReason::Killed(cause) => {
+                crate::println!("sched: task '{}' killed by {cause:?}", s.tasks[current].as_ref().unwrap().name)
+            }
+        }
+        s.tasks[current].as_mut().unwrap().state = TaskState::Exited;
+        let next = s.pick_next();
+        assert_ne!(next, current, "exit_current: no runnable successor (idle must be Ready)");
+        s.tasks[next].as_mut().unwrap().state = TaskState::Running;
+        s.current = next;
+        // Save into the dying slot's own context (never resumed).
+        let old = core::ptr::addr_of_mut!(s.tasks[current].as_mut().unwrap().context);
+        let new = core::ptr::addr_of!(s.tasks[next].as_ref().unwrap().context);
+        (old, new)
+    });
+    // SAFETY: the `assert_ne!` above guarantees `old` and `new` are distinct
+    // slots, so they never alias; both are 'static contexts in SCHED. The
+    // dying (old) slot is never run again, so its saved state is irrelevant.
+    // Single hart + interrupts off in the trap handler mean nothing else
+    // touches them. Control resumes in `next`.
+    unsafe { switch_context(switch.0, switch.1) };
+    unreachable!("exit_current resumes in the next task, never here")
 }
 
 #[cfg(test)]
@@ -377,6 +386,14 @@ mod tests {
         s.tasks[1].as_mut().unwrap().state = TaskState::Running;
         s.tasks[2].as_mut().unwrap().state = TaskState::Running;
         assert_eq!(s.pick_next(), 0);
+    }
+
+    #[test]
+    fn pick_next_skips_exited_slots() {
+        // current = 0 running; slot 1 Exited, slot 2 Ready -> pick 2.
+        let mut s = three_tasks(0);
+        s.tasks[1].as_mut().unwrap().state = TaskState::Exited;
+        assert_eq!(s.pick_next(), 2);
     }
 
     #[test]

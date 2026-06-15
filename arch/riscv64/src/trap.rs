@@ -286,6 +286,12 @@ use core::sync::atomic::{AtomicBool, Ordering};
 #[cfg(target_arch = "riscv64")]
 static EXPECTING_WX_FAULT: AtomicBool = AtomicBool::new(false);
 
+/// One-shot: set the first time a timer tick preempts a task that was
+/// running in U-mode. The smoke test greps for the line this gates — the
+/// 3b-i proof that a U-mode task is schedulable *and* preemptible.
+#[cfg(target_arch = "riscv64")]
+static USER_PREEMPTED: AtomicBool = AtomicBool::new(false);
+
 /// Arm the W^X probe: the next store page fault is expected and will be
 /// reported and skipped instead of panicking.
 #[cfg(target_arch = "riscv64")]
@@ -368,31 +374,38 @@ extern "C" fn trap_handler(frame: &mut TrapFrame) {
         }
         Cause::SupervisorTimer => {
             crate::timer::on_tick();
-            // Tick-policy hook: preempt the running task. The full
-            // register set is already saved in this TrapFrame; preempt()
-            // parks the handler's continuation and runs the next task.
+            // 3b-i proof: the first tick that interrupts a U-mode task is
+            // announced once. `from_user` reads the interrupted frame's SPP.
+            if from_user(frame) && !USER_PREEMPTED.swap(true, Ordering::AcqRel) {
+                crate::println!("sched: U-mode task preempted by timer");
+            }
+            // Tick-policy hook: preempt the running task.
             crate::sched::preempt();
         }
         Cause::UserEcall => {
-            // A syscall from U-mode. ecall does not advance the PC, so on
-            // Resume we step sepc past the 4-byte ecall; Exit never returns
-            // here (terminate_user switches back to kmain).
+            // A syscall from U-mode. ecall does not advance the PC, so for
+            // Resume/Yield we step sepc past the 4-byte ecall; Exit never
+            // returns here (exit_current switches to the next task).
             match crate::syscall::dispatch(frame) {
                 crate::syscall::Outcome::Resume => frame.sepc += 4,
+                crate::syscall::Outcome::Yield => {
+                    frame.sepc += 4;
+                    crate::sched::yield_now();
+                }
                 crate::syscall::Outcome::Exit(code) => {
-                    crate::sched::terminate_user(crate::task::ExitReason::Exited(code))
+                    crate::sched::exit_current(crate::task::ExitReason::Exited(code))
                 }
             }
         }
         Cause::InstructionPageFault | Cause::LoadPageFault if from_user(frame) => {
             // A U-mode task reached for memory it does not own: contain it.
-            crate::sched::terminate_user(crate::task::ExitReason::Killed(cause));
+            crate::sched::exit_current(crate::task::ExitReason::Killed(cause));
         }
         Cause::InstructionPageFault => fatal("instruction page fault", frame),
         Cause::LoadPageFault => fatal("load page fault", frame),
         Cause::StorePageFault => {
             if from_user(frame) {
-                crate::sched::terminate_user(crate::task::ExitReason::Killed(Cause::StorePageFault));
+                crate::sched::exit_current(crate::task::ExitReason::Killed(Cause::StorePageFault));
             } else if EXPECTING_WX_FAULT.swap(false, Ordering::AcqRel) {
                 crate::println!("trap: W^X store fault at {:#x} (probe)", frame.stval);
                 // Like the breakpoint: skip the faulting store so

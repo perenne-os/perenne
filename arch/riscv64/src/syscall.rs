@@ -2,8 +2,8 @@
 //!
 //! A user task executes `ecall`, which traps as `scause = 8` ("environment
 //! call from U-mode"). The ABI: `a7` = syscall number, `a0..` = arguments,
-//! and the return value goes back in `a0`. Two calls exist in Phase 3a:
-//! `print` (1) and `exit` (2).
+//! and the return value goes back in `a0`. Three calls now exist: `print` (1)
+//! and `exit` (2) from Phase 3a, and `yield` (3) added in Phase 3b-i.
 //!
 //! Pure here (host-testable): decoding the syscall number and the
 //! confused-deputy guard that validates a user-supplied buffer lies inside
@@ -17,6 +17,8 @@ pub enum Syscall {
     Print,
     /// `exit(code)` — terminate the calling task.
     Exit,
+    /// `yield()` — give up the CPU to the next ready task.
+    Yield,
     /// An unrecognized syscall number (a user bug, not a kernel bug).
     Unknown(usize),
 }
@@ -26,6 +28,7 @@ pub fn decode_syscall(a7: usize) -> Syscall {
     match a7 {
         1 => Syscall::Print,
         2 => Syscall::Exit,
+        3 => Syscall::Yield,
         n => Syscall::Unknown(n),
     }
 }
@@ -57,6 +60,11 @@ mod tests {
     #[test]
     fn decodes_unknown_syscall() {
         assert_eq!(decode_syscall(99), Syscall::Unknown(99));
+    }
+
+    #[test]
+    fn decodes_yield_syscall() {
+        assert_eq!(decode_syscall(3), Syscall::Yield);
     }
 
     #[test]
@@ -101,6 +109,8 @@ pub enum Outcome {
     Resume,
     /// The task asked to exit with this code.
     Exit(usize),
+    /// The task asked to yield; the handler advances `sepc`, then reschedules.
+    Yield,
 }
 
 /// Largest `print` we copy in one syscall. The demo strings are short; a
@@ -126,6 +136,7 @@ pub fn dispatch(frame: &mut crate::trap::TrapFrame) -> Outcome {
             Outcome::Resume
         }
         Syscall::Exit => Outcome::Exit(a0),
+        Syscall::Yield => Outcome::Yield,
         Syscall::Unknown(_) => {
             frame.regs[9] = usize::MAX; // -1: unknown syscall
             Outcome::Resume
