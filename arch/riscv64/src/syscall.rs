@@ -2,8 +2,8 @@
 //!
 //! A user task executes `ecall`, which traps as `scause = 8` ("environment
 //! call from U-mode"). The ABI: `a7` = syscall number, `a0..` = arguments,
-//! and the return value goes back in `a0`. Two calls exist in Phase 3a:
-//! `print` (1) and `exit` (2).
+//! and the return value goes back in `a0`. Three calls now exist: `print` (1)
+//! and `exit` (2) from Phase 3a, and `yield` (3) added in Phase 3b-i.
 //!
 //! Pure here (host-testable): decoding the syscall number and the
 //! confused-deputy guard that validates a user-supplied buffer lies inside
