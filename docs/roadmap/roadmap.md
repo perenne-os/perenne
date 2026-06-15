@@ -51,9 +51,34 @@ gets its own design → plan → build cycle.
 
 ### Phase 3b — Capabilities & IPC
 
-- **Goal:** unforgeable capability tokens, capability-checked syscalls, and synchronous message passing between two isolated user components (with blocking/wait queues and U-mode tasks in the run queue).
-- **You learn:** capabilities, IPC, per-address-space isolation, blocking.
-- **Done when:** two components run at least authority and communicate only through capability-checked IPC.
+Decomposed (2026-06-14) into three sub-phases, mirroring 2a/2b/2c and
+3a/3b/3c. The scheduling substrate comes first (something must *hold* a
+capability and *be* a component), then isolation, then the capability/IPC
+finale. Each sub-phase gets its own design → plan → build cycle.
+
+#### Phase 3b-i — U-mode tasks in the run queue  *(done — 2026-06-14)*
+
+- **Goal:** kernel and U-mode tasks share one round-robin run queue;
+  per-task privilege is carried by the saved trapframe.
+- **You learn:** forging a U-mode task's first run, scheduler-based
+  termination, the `yield` syscall (see [learning note 0007](../learning/0007-user-scheduling.md)).
+- **Done when:** `./tools/test-qemu.ps1` observes two U-mode tasks
+  round-robin via `yield` and exit cleanly, a bad U-mode task contained
+  while the scheduler keeps running, and a U-mode task preempted by the
+  timer — all in one boot, alongside the 2a/2b/2c milestones.
+
+#### Phase 3b-ii — Per-address-space isolation
+
+- **Goal:** each component gets its own `satp`; the kernel is mapped into
+  every address space; `satp` swaps on context switch.
+- **Done when:** two tasks cannot read each other's memory.
+
+#### Phase 3b-iii — Capabilities + synchronous IPC + blocking
+
+- **Goal:** unforgeable capability tokens, capability-checked syscalls, a
+  synchronous send/recv endpoint, and blocking/wait-queue task states.
+- **Done when:** two isolated components communicate only through
+  capability-checked IPC.
 
 ### Phase 3c — PQC primitive
 
