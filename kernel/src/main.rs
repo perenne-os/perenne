@@ -63,7 +63,7 @@ mod bare {
         sched::spawn_user("bad", user_bad,
             core::ptr::addr_of!(US_BAD) as usize + USER_STACK_SIZE,
             core::ptr::addr_of!(KS_BAD) as usize + TASK_STACK);
-        sched::spawn("idle", idle, core::ptr::addr_of!(IDLE_STACK) as usize + TASK_STACK);
+        sched::spawn("idle", idle, core::ptr::addr_of!(KS_IDLE) as usize + TASK_STACK);
 
         timer::start();
         println!("(scheduler starting; heartbeat ~1/s; exit QEMU with Ctrl-A then X)");
@@ -129,7 +129,7 @@ mod bare {
     static mut KS_PONG: KStack = [0; TASK_STACK];
     static mut KS_HOG: KStack = [0; TASK_STACK];
     static mut KS_BAD: KStack = [0; TASK_STACK];
-    static mut IDLE_STACK: KStack = [0; TASK_STACK];
+    static mut KS_IDLE: KStack = [0; TASK_STACK];
 
     /// U-mode task stacks live in `.user_data` so mem::init maps them RW-U.
     const USER_STACK_SIZE: usize = 8 * 1024;
@@ -146,6 +146,9 @@ mod bare {
     /// Messages the U-mode tasks ask the kernel to print. In `.user_data`
     /// (R-U) so the confused-deputy guard accepts their pointers and the
     /// SUM-window copy can read them. Each ends in '\n'; lengths are exact.
+    /// All entries share the 13-byte element type; the hog messages use two
+    /// spaces after "hog" to reach that length (a 12-byte literal would fail
+    /// to compile).
     #[link_section = ".user_data"]
     static PING_MSG: [[u8; 13]; 2] = [*b"user: ping 0\n", *b"user: ping 1\n"];
     #[link_section = ".user_data"]
@@ -211,6 +214,8 @@ mod bare {
         }
     }
 
+    /// Peer of `user_ping`: same protocol (print two lines, yielding between
+    /// each, then exit cleanly) — the two interleave to prove round-robin.
     #[no_mangle]
     #[link_section = ".user_text"]
     extern "C" fn user_pong() -> ! {

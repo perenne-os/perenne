@@ -6,6 +6,8 @@
 # tasks round-robin via the yield syscall and exit cleanly, a bad U-mode task
 # is contained while the scheduler keeps running, and a U-mode task is
 # preempted by the timer.
+# (Phase 2c cooperative scheduling + preemption is now proven by the broader
+# 3b-i run-queue demo.)
 # Usage: ./tools/test-qemu.ps1     (exit code 0 = pass, 1 = fail)
 $ErrorActionPreference = "Stop"
 $repo = Split-Path -Parent $PSScriptRoot
