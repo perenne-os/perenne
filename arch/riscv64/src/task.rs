@@ -47,7 +47,8 @@ pub enum TaskState {
     Exited,
 }
 
-/// Why a U-mode task stopped running, reported back by `sched::enter_user`.
+/// Why a U-mode task stopped running. Passed to `sched::exit_current` by the
+/// trap handler for the `exit` syscall or a fatal U-mode fault.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExitReason {
     /// The task called `exit(code)`.

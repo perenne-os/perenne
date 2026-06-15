@@ -327,8 +327,11 @@ pub fn exit_current(reason: ExitReason) -> ! {
         let new = core::ptr::addr_of!(s.tasks[next].as_ref().unwrap().context);
         (old, new)
     });
-    // SAFETY: distinct 'static contexts; the old (dying) slot is never run
-    // again so its saved state is irrelevant; control resumes in `next`.
+    // SAFETY: the `assert_ne!` above guarantees `old` and `new` are distinct
+    // slots, so they never alias; both are 'static contexts in SCHED. The
+    // dying (old) slot is never run again, so its saved state is irrelevant.
+    // Single hart + interrupts off in the trap handler mean nothing else
+    // touches them. Control resumes in `next`.
     unsafe { switch_context(switch.0, switch.1) };
     unreachable!("exit_current resumes in the next task, never here")
 }
