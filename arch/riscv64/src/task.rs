@@ -34,14 +34,17 @@ impl Context {
     }
 }
 
-/// A task's scheduling state. Only the two states Phase 2c needs:
-/// blocking/sleeping and exit arrive with the concepts that need them.
+/// A task's scheduling state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskState {
     /// Runnable, not currently on the CPU.
     Ready,
     /// Currently on the CPU (exactly one task at a time, single hart).
     Running,
+    /// Terminated (clean `exit` or a fatal U-mode fault). Never scheduled
+    /// again; the slot is skipped by `pick_next`. Stacks are not reclaimed
+    /// (reaping is deferred).
+    Exited,
 }
 
 /// Why a U-mode task stopped running, reported back by `sched::enter_user`.
@@ -60,6 +63,27 @@ pub enum ExitReason {
 /// the return. All other bits (notably SUM = 0) are preserved.
 pub fn user_sstatus(current: usize) -> usize {
     (current & !(1 << 8)) | (1 << 5)
+}
+
+/// Forge the first-run [`Context`] of a U-mode task. The first
+/// `switch_context` into this context "returns" into `tramp`
+/// (`sched::user_trampoline`), which reads `s0`/`s1`/`s2` and `sret`s to
+/// U-mode. Both stack pointers are rounded down to a 16-byte boundary
+/// (RISC-V ABI). Pure (host-tested); `sched::spawn_user` supplies `tramp`.
+pub fn forge_user_context(
+    tramp: usize,
+    entry: usize,
+    user_sp: usize,
+    kstack_top: usize,
+    sstatus: usize,
+) -> Context {
+    let mut c = Context::zeroed();
+    c.ra = tramp;
+    c.sp = kstack_top & !0xF;
+    c.s[0] = entry;
+    c.s[1] = user_sp & !0xF;
+    c.s[2] = sstatus;
+    c
 }
 
 /// An in-kernel task: its parked context, its state, the top of its
@@ -111,5 +135,17 @@ mod tests {
         assert_ne!(s & (1 << 18), 0, "unrelated bits preserved");
         assert_eq!(s & (1 << 8), 0);
         assert_ne!(s & (1 << 5), 0);
+    }
+
+    #[test]
+    fn forge_user_context_sets_launch_fields() {
+        // tramp/entry/user_sp/kstack are arbitrary addresses for the test;
+        // 16-alignment is applied to the two stack pointers.
+        let c = forge_user_context(0xAAAA, 0xBBBB, 0x1_0008, 0x2_0008, 0xCAFE);
+        assert_eq!(c.ra, 0xAAAA, "ra = trampoline");
+        assert_eq!(c.sp, 0x2_0000, "sp = kstack_top, 16-aligned");
+        assert_eq!(c.s[0], 0xBBBB, "s0 = user entry (-> sepc)");
+        assert_eq!(c.s[1], 0x1_0000, "s1 = user sp, 16-aligned");
+        assert_eq!(c.s[2], 0xCAFE, "s2 = sstatus");
     }
 }
