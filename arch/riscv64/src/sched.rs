@@ -112,12 +112,14 @@ extern "C" {
     fn task_trampoline();
 }
 
-/// Reached only if a task's entry function returns — a Phase 2c bug
-/// (entries must loop forever; task exit is deferred).
+/// Reached only if a *kernel* task's entry function returns. Kernel tasks
+/// (entered via `task_trampoline`) must loop forever — there is no exit path
+/// for them. (U-mode tasks exit cleanly via the `exit` syscall →
+/// `exit_current`; this trampoline is not on their path.)
 #[cfg(target_arch = "riscv64")]
 #[no_mangle]
 extern "C" fn task_has_returned() -> ! {
-    panic!("task entry returned (task exit is not implemented in Phase 2c)");
+    panic!("kernel task entry returned (kernel tasks must loop forever)");
 }
 
 /// The kernel's one scheduler. Lives in a `SingleHartCell` (the same
