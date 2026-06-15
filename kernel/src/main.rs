@@ -18,7 +18,7 @@ mod bare {
     use core::panic::PanicInfo;
 
     use kernel::GREETING;
-    use kernel_arch_riscv64::{mem, println, sched, task::ExitReason, timer, trap};
+    use kernel_arch_riscv64::{mem, println, sched, timer, trap};
     use kernel_common::PROJECT_NAME;
 
     /// Rust entry, called from the boot assembly with the arguments
@@ -26,7 +26,7 @@ mod bare {
     #[no_mangle]
     extern "C" fn kmain(hartid: usize, _dtb: usize) -> ! {
         println!();
-        println!("{GREETING} from {PROJECT_NAME} - Phase 3a (hart {hartid})");
+        println!("{GREETING} from {PROJECT_NAME} - Phase 3b-i (hart {hartid})");
 
         trap::init();
         // Deliberate breakpoint: proves the handler catches an exception
@@ -44,36 +44,27 @@ mod bare {
         wx_probe();
         frame_roundtrip();
 
-        // Phase 3a: run the embedded U-mode program to completion, twice.
-        // The first task prints via a syscall and exits cleanly; the second
-        // reaches into kernel memory and is contained. enter_user returns
-        // when each task ends. The user runs with sstatus.SIE = 1 (SPIE is
-        // forged on), but no timer can preempt it: sie.STIE is not armed
-        // until timer::start() below — so the focus here is the privilege
-        // boundary, not scheduling.
-        let trap_top = core::ptr::addr_of!(TRAP_STACK) as usize + TASK_STACK;
-        let user_sp = core::ptr::addr_of!(USER_STACK) as usize + USER_STACK_SIZE;
-        match sched::enter_user(user_good, user_sp, trap_top) {
-            ExitReason::Exited(code) => println!("user: task exited with code {code}"),
-            ExitReason::Killed(c) => println!("user: task killed by {c:?} (unexpected)"),
-        }
-        match sched::enter_user(user_bad, user_sp, trap_top) {
-            ExitReason::Killed(_) => println!("user: task killed by load page fault"),
-            ExitReason::Exited(code) => {
-                println!("user: task exited with code {code} (boundary NOT enforced!)")
-            }
-        }
+        // Phase 3b-i: one run queue holding a kernel idle task and four
+        // U-mode tasks. ping/pong cooperate via the yield syscall and exit
+        // cleanly; bad reaches into kernel memory and is contained; hog
+        // never yields, so the first timer tick preempts a U-mode task.
+        // Spawn order puts ping in slot 0, so enter() runs it first.
+        // addr_of! forms each static stack's top address WITHOUT a reference
+        // (no unsafe, no static_mut_refs lint) — the existing 2c/3a pattern.
+        sched::spawn_user("ping", user_ping,
+            core::ptr::addr_of!(US_PING) as usize + USER_STACK_SIZE,
+            core::ptr::addr_of!(KS_PING) as usize + TASK_STACK);
+        sched::spawn_user("pong", user_pong,
+            core::ptr::addr_of!(US_PONG) as usize + USER_STACK_SIZE,
+            core::ptr::addr_of!(KS_PONG) as usize + TASK_STACK);
+        sched::spawn_user("hog", user_hog,
+            core::ptr::addr_of!(US_HOG) as usize + USER_STACK_SIZE,
+            core::ptr::addr_of!(KS_HOG) as usize + TASK_STACK);
+        sched::spawn_user("bad", user_bad,
+            core::ptr::addr_of!(US_BAD) as usize + USER_STACK_SIZE,
+            core::ptr::addr_of!(KS_BAD) as usize + TASK_STACK);
+        sched::spawn("idle", idle, core::ptr::addr_of!(IDLE_STACK) as usize + TASK_STACK);
 
-        // Phase 2c: spawn three tasks and hand the CPU to the scheduler.
-        // Interrupts are enabled here (timer::start) BEFORE entering, so
-        // the cooperative round-robin runs in the sub-millisecond window
-        // before the first tick (~1 s away); preemption then takes over.
-        // addr_of! takes each static stack's address without forming a
-        // reference (no unsafe needed, no static_mut_refs lint); the top
-        // of the array is this task's initial stack pointer.
-        sched::spawn("A", task_a, core::ptr::addr_of!(STACK_A) as usize + TASK_STACK);
-        sched::spawn("B", task_b, core::ptr::addr_of!(STACK_B) as usize + TASK_STACK);
-        sched::spawn("C", task_c, core::ptr::addr_of!(STACK_C) as usize + TASK_STACK);
         timer::start();
         println!("(scheduler starting; heartbeat ~1/s; exit QEMU with Ctrl-A then X)");
         sched::enter()
@@ -128,34 +119,39 @@ mod bare {
         println!("frames: alloc/free ok");
     }
 
-    use core::sync::atomic::{AtomicBool, Ordering};
-
-    /// Per-task kernel stack size. 16 KiB is ample for these print loops;
-    /// per-task guard pages are deferred (see the Phase 2c spec §3.5).
+    /// Per-task kernel stack size (also the trap stack a U-mode task's
+    /// traps land on). 16 KiB; per-task guard pages stay deferred.
     const TASK_STACK: usize = 16 * 1024;
+    type KStack = [u8; TASK_STACK];
 
-    static mut STACK_A: [u8; TASK_STACK] = [0; TASK_STACK];
-    static mut STACK_B: [u8; TASK_STACK] = [0; TASK_STACK];
-    static mut STACK_C: [u8; TASK_STACK] = [0; TASK_STACK];
+    /// One kernel/trap stack per U-mode task, plus one for the idle task.
+    static mut KS_PING: KStack = [0; TASK_STACK];
+    static mut KS_PONG: KStack = [0; TASK_STACK];
+    static mut KS_HOG: KStack = [0; TASK_STACK];
+    static mut KS_BAD: KStack = [0; TASK_STACK];
+    static mut IDLE_STACK: KStack = [0; TASK_STACK];
 
-    /// Trusted kernel stack that U-mode traps land on (via the sscratch
-    /// swap). Kernel memory — never mapped U.
-    static mut TRAP_STACK: [u8; TASK_STACK] = [0; TASK_STACK];
-
-    /// The U-mode task's stack. Lives in `.user_data` so mem::init maps it
-    /// RW-U; sized separately from kernel stacks.
+    /// U-mode task stacks live in `.user_data` so mem::init maps them RW-U.
     const USER_STACK_SIZE: usize = 8 * 1024;
+    type UStack = [u8; USER_STACK_SIZE];
     #[link_section = ".user_data"]
-    static mut USER_STACK: [u8; USER_STACK_SIZE] = [0; USER_STACK_SIZE];
+    static mut US_PING: UStack = [0; USER_STACK_SIZE];
+    #[link_section = ".user_data"]
+    static mut US_PONG: UStack = [0; USER_STACK_SIZE];
+    #[link_section = ".user_data"]
+    static mut US_HOG: UStack = [0; USER_STACK_SIZE];
+    #[link_section = ".user_data"]
+    static mut US_BAD: UStack = [0; USER_STACK_SIZE];
 
-    /// The message the good user task asks the kernel to print. In
-    /// `.user_data` (R-U) so the confused-deputy guard accepts its pointer
-    /// and the SUM-window copy can read it. A `.rodata` string would be
-    /// rejected (it is outside the user region) — that is the point. The
-    /// "user: " prefix is part of the message so the smoke test can grep
-    /// for the kernel's verbatim echo. Length is exact: 27 bytes.
+    /// Messages the U-mode tasks ask the kernel to print. In `.user_data`
+    /// (R-U) so the confused-deputy guard accepts their pointers and the
+    /// SUM-window copy can read them. Each ends in '\n'; lengths are exact.
     #[link_section = ".user_data"]
-    static USER_MSG: [u8; 27] = *b"user: hello from user mode\n";
+    static PING_MSG: [[u8; 13]; 2] = [*b"user: ping 0\n", *b"user: ping 1\n"];
+    #[link_section = ".user_data"]
+    static PONG_MSG: [[u8; 13]; 2] = [*b"user: pong 0\n", *b"user: pong 1\n"];
+    #[link_section = ".user_data"]
+    static HOG_MSG: [[u8; 13]; 2] = [*b"user: hog  0\n", *b"user: hog  1\n"];
 
     /// Print syscall (a7 = 1): a0 = ptr, a1 = len. `inline(always)` so it
     /// folds into the user entry and the `.user_text` page stays
@@ -190,80 +186,98 @@ mod bare {
         );
     }
 
-    /// The well-behaved U-mode task: print a message, then exit cleanly.
-    /// In `.user_text` (R-X-U); calls only the inlined syscall stubs, so it
-    /// never touches a non-U page.
+    /// Yield syscall (a7 = 3): give up the CPU; returns when rescheduled.
+    ///
+    /// # Safety
+    /// Always sound; the kernel reschedules and resumes this task later.
+    #[inline(always)]
+    unsafe fn sys_yield() {
+        core::arch::asm!("ecall", in("a7") 3usize, options(nostack));
+    }
+
+    /// Cooperating U-mode task: print two lines, yielding to its peer
+    /// between each, then exit cleanly.
     #[no_mangle]
     #[link_section = ".user_text"]
-    extern "C" fn user_good() -> ! {
-        // SAFETY: USER_MSG is in .user_data (R-U); we only take its address
-        // (no U-mode read of it) — the kernel validates and reads it.
+    extern "C" fn user_ping() -> ! {
+        // SAFETY: PING_MSG is in .user_data (R-U); we pass addresses the
+        // kernel validates and reads. yield/exit are always sound.
         unsafe {
-            sys_print(USER_MSG.as_ptr(), USER_MSG.len());
+            sys_print(PING_MSG[0].as_ptr(), PING_MSG[0].len());
+            sys_yield();
+            sys_print(PING_MSG[1].as_ptr(), PING_MSG[1].len());
+            sys_yield();
             sys_exit(0)
         }
     }
 
-    /// The misbehaving U-mode task: read a kernel address. The kernel page
-    /// is mapped non-U, so the U-mode load faults and the kernel contains
-    /// the task (it never reaches the exit below).
+    #[no_mangle]
+    #[link_section = ".user_text"]
+    extern "C" fn user_pong() -> ! {
+        // SAFETY: see `user_ping`.
+        unsafe {
+            sys_print(PONG_MSG[0].as_ptr(), PONG_MSG[0].len());
+            sys_yield();
+            sys_print(PONG_MSG[1].as_ptr(), PONG_MSG[1].len());
+            sys_yield();
+            sys_exit(0)
+        }
+    }
+
+    /// The hog: two cooperative rounds, then spin forever without yielding.
+    /// The timer must preempt it (it is the sole non-yielder once ping/pong
+    /// exit), which proves a U-mode task is preemptible.
+    #[no_mangle]
+    #[link_section = ".user_text"]
+    extern "C" fn user_hog() -> ! {
+        // SAFETY: see `user_ping`.
+        unsafe {
+            sys_print(HOG_MSG[0].as_ptr(), HOG_MSG[0].len());
+            sys_yield();
+            sys_print(HOG_MSG[1].as_ptr(), HOG_MSG[1].len());
+            sys_yield();
+        }
+        loop {
+            core::hint::spin_loop();
+        }
+    }
+
+    /// The misbehaving U-mode task: load a byte from kernel address space.
+    /// The kernel page is non-U, so the U-mode load faults and the kernel
+    /// contains the task (it never reaches the exit below); the scheduler
+    /// keeps running.
+    ///
+    /// We use inline asm for the load instead of `read_volatile` to guarantee
+    /// the instruction is emitted here (in `.user_text`) and not called out to
+    /// a kernel-text helper — in a debug build the latter would generate a
+    /// `jalr` into kernel `.text`, which faults as InstructionPageFault before
+    /// the load can fault as LoadPageFault.
     #[no_mangle]
     #[link_section = ".user_text"]
     extern "C" fn user_bad() -> ! {
         // 0x80200000 is the kernel .text base (mapped R-X-G, no U bit).
-        let kernel_addr = 0x8020_0000 as *const u8;
-        // SAFETY: this is the deliberate boundary violation. The volatile
-        // read faults in U-mode before it can complete; control never
-        // returns to this task.
-        let _ = unsafe { core::ptr::read_volatile(kernel_addr) };
-        unsafe { sys_exit(0) } // unreachable: the read above faults first
-    }
-
-    /// Set by task C when it stops yielding. A and B only ever observe it
-    /// as `true` if a timer preemption schedules them while C hogs the
-    /// CPU — which is exactly the preemption proof.
-    static HOGGING: AtomicBool = AtomicBool::new(false);
-
-    extern "C" fn task_a() -> ! {
-        worker("A")
-    }
-
-    extern "C" fn task_b() -> ! {
-        worker("B")
-    }
-
-    /// The cooperative citizens: two visible steps yielding between each
-    /// (proving round-robin), then spin yielding. When C starts hogging,
-    /// the next time preemption lets this task run it prints the proof
-    /// line once, then goes quiet.
-    fn worker(name: &str) -> ! {
-        for n in 0..2 {
-            println!("sched: {name} step {n}");
-            sched::yield_now();
+        // The lb faults in U-mode with LoadPageFault before retiring.
+        // Control never returns here; the scheduler contains this task.
+        unsafe {
+            core::arch::asm!(
+                "lb {tmp}, 0({addr})",
+                addr = in(reg) 0x8020_0000usize,
+                tmp = out(reg) _,
+                options(nostack),
+            );
+            sys_exit(0) // unreachable: the load above faults first
         }
+    }
+
+    /// The idle kernel (S-mode) task: cooperatively yield when other tasks
+    /// are ready; `wfi`-sleep when it is the only runnable task. Never
+    /// exits, so it is always a valid successor for `exit_current` and keeps
+    /// the system alive after every U-mode task has finished.
+    extern "C" fn idle() -> ! {
         loop {
-            if HOGGING.load(Ordering::Acquire) {
-                println!("sched: {name} preempted the hog");
-                loop {
-                    sched::yield_now();
-                }
-            }
             sched::yield_now();
-        }
-    }
-
-    /// The hog: two cooperative steps, then a tight loop that NEVER
-    /// yields. Without preemption the kernel would be stuck here forever;
-    /// the timer tick is what lets A and B run again.
-    extern "C" fn task_c() -> ! {
-        for n in 0..2 {
-            println!("sched: C step {n}");
-            sched::yield_now();
-        }
-        println!("sched: C hogging (no yield)");
-        HOGGING.store(true, Ordering::Release);
-        loop {
-            core::hint::spin_loop();
+            // SAFETY: wfi just waits for the next interrupt (the timer).
+            unsafe { core::arch::asm!("wfi") };
         }
     }
 
