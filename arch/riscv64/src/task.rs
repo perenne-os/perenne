@@ -82,7 +82,7 @@ pub fn forge_user_context(
     c.sp = kstack_top & !0xF;
     c.s[0] = entry;
     c.s[1] = user_sp & !0xF;
-    c.s[2] = sstatus;
+    c.s[2] = sstatus; // CSR bit-field, not an address — no alignment
     c
 }
 
@@ -147,5 +147,6 @@ mod tests {
         assert_eq!(c.s[0], 0xBBBB, "s0 = user entry (-> sepc)");
         assert_eq!(c.s[1], 0x1_0000, "s1 = user sp, 16-aligned");
         assert_eq!(c.s[2], 0xCAFE, "s2 = sstatus");
+        assert_eq!(c.s[3..], [0usize; 9], "untouched slots stay zero");
     }
 }
