@@ -13,6 +13,13 @@ use crate::task::{Task, TaskState};
 // to those two configs to keep the host lib build warning-free.
 #[cfg(any(target_arch = "riscv64", test))]
 use crate::task::Context;
+// The test helper and the gated IPC code both name these.
+#[cfg(any(target_arch = "riscv64", test))]
+use crate::task::{Message, CAP_SLOTS};
+// `IpcRole` is named by the `Blocked` test now and the gated IPC code (the
+// gate widens to `riscv64` in the next task, which adds that usage).
+#[cfg(test)]
+use crate::task::IpcRole;
 
 /// Maximum concurrent tasks: the 3b-i demo runs five (idle + four U-mode
 /// tasks) plus one slot of headroom.
@@ -136,7 +143,7 @@ static SCHED: crate::mem::SingleHartCell<Scheduler> =
 /// `stack_top` is the (exclusive) top address of a static stack array;
 /// it is rounded down to a 16-byte boundary per the RISC-V ABI.
 #[cfg(target_arch = "riscv64")]
-pub fn spawn(name: &'static str, entry: extern "C" fn() -> !, stack_top: usize) {
+pub fn spawn(name: &'static str, entry: extern "C" fn() -> !, stack_top: usize) -> usize {
     SCHED.with(|s| {
         let slot = s
             .tasks
@@ -153,7 +160,22 @@ pub fn spawn(name: &'static str, entry: extern "C" fn() -> !, stack_top: usize) 
             stack_top,
             name,
             satp: crate::mem::kernel_satp(),
+            caps: [None; CAP_SLOTS],
+            message: Message::EMPTY,
         });
+        slot
+    })
+}
+
+/// Install `cap` at `cap_slot` in the capability table of the task in
+/// scheduler `slot`. Called at boot to hand a task its initial authority.
+#[cfg(target_arch = "riscv64")]
+pub fn grant_cap(slot: usize, cap_slot: usize, cap: crate::cap::Capability) {
+    SCHED.with(|s| {
+        s.tasks[slot]
+            .as_mut()
+            .expect("grant_cap: empty task slot")
+            .caps[cap_slot] = Some(cap);
     });
 }
 
@@ -290,7 +312,7 @@ pub fn spawn_user(
     user_sp: usize,
     kstack_top: usize,
     satp: usize,
-) {
+) -> usize {
     SCHED.with(|s| {
         let slot = s
             .tasks
@@ -310,8 +332,11 @@ pub fn spawn_user(
             stack_top: kstack_top,
             name,
             satp,
+            caps: [None; CAP_SLOTS],
+            message: Message::EMPTY,
         });
-    });
+        slot
+    })
 }
 
 /// Terminate the running task and switch to the next ready one. Called from
@@ -362,7 +387,15 @@ mod tests {
     use super::*;
 
     fn task(name: &'static str, state: TaskState) -> Task {
-        Task { context: Context::zeroed(), state, stack_top: 0, name, satp: 0 }
+        Task {
+            context: Context::zeroed(),
+            state,
+            stack_top: 0,
+            name,
+            satp: 0,
+            caps: [None; CAP_SLOTS],
+            message: Message::EMPTY,
+        }
     }
 
     /// Three ready tasks in slots 0..3, slot 3 empty; `current` running.
@@ -412,6 +445,15 @@ mod tests {
         // current = 0 running; slot 1 Exited, slot 2 Ready -> pick 2.
         let mut s = three_tasks(0);
         s.tasks[1].as_mut().unwrap().state = TaskState::Exited;
+        assert_eq!(s.pick_next(), 2);
+    }
+
+    #[test]
+    fn pick_next_skips_blocked_slots() {
+        // current = 0 running; slot 1 Blocked on recv, slot 2 Ready -> pick 2.
+        let mut s = three_tasks(0);
+        s.tasks[1].as_mut().unwrap().state =
+            TaskState::Blocked { endpoint: 0, role: IpcRole::Recv };
         assert_eq!(s.pick_next(), 2);
     }
 
