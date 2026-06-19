@@ -51,9 +51,6 @@ pub unsafe fn sstatus_enable_interrupts() {
     unsafe { asm!("csrsi sstatus, 0x2", options(nostack, nomem)) };
 }
 
-/// `satp` mode field (bits 63:60) selecting Sv39 translation.
-pub const SATP_MODE_SV39: usize = 8 << 60;
-
 /// Point address translation at a root page table and switch it on:
 /// `value` = mode bits | root-table PPN (physical address >> 12).
 /// The trailing `sfence.vma` makes the new root visible; the leading
