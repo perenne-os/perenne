@@ -46,7 +46,9 @@ Plain-language definitions of terms used throughout these docs. Aimed at someone
 - **Page table** — the tree the MMU walks to translate addresses. In Sv39 it has three levels; each table is one 4 KiB frame of 512 entries.
 - **PTE (Page Table Entry)** — one slot in a page table: the next level's (or final frame's) number plus permission flags (Valid/Read/Write/eXecute…).
 - **Sv39** — RISC-V's three-level paging scheme: 39-bit virtual addresses, 4 KiB pages. What Phase 2b enables.
-- **`satp`** — the CSR that holds the root page table's frame number and translation mode; writing it turns paging on.
+- **`satp`** — the CSR that holds the root page table's frame number and translation mode; writing it turns paging on (Phase 2b) and, from Phase 3b-ii, selects the running task's address space — the scheduler writes it on every context switch.
+- **Address space** — the set of virtual→physical mappings a task sees, named by its `satp`. From Phase 3b-ii each U-mode task has its own, so one task can't reach another's memory.
+- **Global mapping (`PTE_G`)** — a PTE bit marking a translation as the same in every address space (the TLB needn't flush it across an `satp` change). It is only a TLB *hint*: the mapping must still physically exist in each tree being walked — so Phase 3b-ii *clones* the kernel into every per-task page table rather than relying on `G` alone.
 - **TLB (Translation Lookaside Buffer)** — the MMU's cache of recent translations; must be flushed (`sfence.vma`) when mappings change.
 - **`sfence.vma`** — the RISC-V instruction that flushes the TLB so stale translations can't survive a page-table change.
 - **Identity mapping** — mapping each virtual address to the identical physical address. Changes nothing about *where* things are — and everything about *what's allowed*, via permission bits.

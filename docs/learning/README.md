@@ -17,3 +17,4 @@ This folder holds the author's learning notes as systems-programming concepts cl
 - [0005 — Scheduling and context switching (Phase 2c)](0005-scheduling-and-context-switching.md)
 - [0006 — User mode and system calls (Phase 3a)](0006-user-mode-and-syscalls.md)
 - [0007 — U-mode tasks in the run queue (Phase 3b-i)](0007-user-scheduling.md)
+- [0008 — Per-address-space isolation (Phase 3b-ii)](0008-address-space-isolation.md)
