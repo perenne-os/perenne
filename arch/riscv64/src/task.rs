@@ -97,6 +97,9 @@ pub struct Task {
     /// what actually drives execution).
     pub stack_top: usize,
     pub name: &'static str,
+    /// The `satp` (address space) to load when this task runs. Kernel tasks
+    /// carry the master kernel `satp`; U-mode tasks carry their private one.
+    pub satp: usize,
 }
 
 #[cfg(test)]
