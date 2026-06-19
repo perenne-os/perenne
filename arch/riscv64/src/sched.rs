@@ -15,11 +15,10 @@ use crate::task::{Task, TaskState};
 use crate::task::Context;
 // The test helper and the gated IPC code both name these.
 #[cfg(any(target_arch = "riscv64", test))]
-use crate::task::{Message, CAP_SLOTS};
-// `IpcRole` is named by the `Blocked` test now and the gated IPC code (the
-// gate widens to `riscv64` in the next task, which adds that usage).
-#[cfg(test)]
-use crate::task::IpcRole;
+use crate::task::{Message, IpcRole, CAP_SLOTS};
+// The IPC rendezvous looks up endpoint capabilities.
+#[cfg(target_arch = "riscv64")]
+use crate::cap::{cap_lookup, EndpointId};
 
 /// Maximum concurrent tasks: the 3b-i demo runs five (idle + four U-mode
 /// tasks) plus one slot of headroom.
@@ -380,6 +379,168 @@ pub fn exit_current(reason: ExitReason) -> ! {
         switch_context(switch.0, switch.1);
     }
     unreachable!("exit_current resumes in the next task, never here")
+}
+
+// ---- Synchronous IPC rendezvous (Phase 3b-iii) ----
+//
+// An endpoint is a symbolic id; its wait queue is the set of tasks Blocked
+// on it (found by scanning the task array). send/recv either deliver-and-
+// wake a waiting peer or block the caller until one arrives. The message
+// rides registers only — no memory is touched.
+
+/// The result of inspecting the rendezvous for a `recv`.
+#[cfg(target_arch = "riscv64")]
+enum RecvStep {
+    BadCap,
+    Got(Message),
+    Block(EndpointId),
+}
+
+/// The result of inspecting the rendezvous for a `send`.
+#[cfg(target_arch = "riscv64")]
+enum SendStep {
+    BadCap,
+    Delivered,
+    Block(EndpointId),
+}
+
+/// Write a received [`Message`] into the ABI return registers of `frame`:
+/// a0 = badge, a1..a3 = data (`regs[9]` = a0, `regs[10]` = a1, …).
+#[cfg(target_arch = "riscv64")]
+fn write_message(frame: &mut crate::trap::TrapFrame, msg: Message) {
+    frame.regs[9] = msg.badge;
+    frame.regs[10] = msg.data[0];
+    frame.regs[11] = msg.data[1];
+    frame.regs[12] = msg.data[2];
+}
+
+/// First task (in slot order) blocked on `ep` as `role`, if any. The
+/// endpoint's wait queue is implicit: the set of `Blocked` tasks.
+#[cfg(target_arch = "riscv64")]
+fn find_blocked(s: &Scheduler, ep: EndpointId, role: IpcRole) -> Option<usize> {
+    let want = TaskState::Blocked { endpoint: ep, role };
+    s.tasks
+        .iter()
+        .position(|slot| slot.as_ref().is_some_and(|t| t.state == want))
+}
+
+/// Block the current task at an IPC rendezvous and switch to the next
+/// runnable task. The caller has NOT yet changed the task's state; this
+/// marks it `Blocked { endpoint, role }`, switches away, and returns only
+/// when a peer wakes it (sets it `Ready`). Called from the trap handler
+/// with interrupts off (like `exit_current`). The always-`Ready` idle task
+/// guarantees a successor exists.
+#[cfg(target_arch = "riscv64")]
+fn block_current(endpoint: EndpointId, role: IpcRole) {
+    let switch = SCHED.with(|s| {
+        let current = s.current;
+        s.tasks[current].as_mut().unwrap().state =
+            TaskState::Blocked { endpoint, role };
+        let next = s.pick_next();
+        assert_ne!(next, current, "block_current: no runnable successor (idle must be Ready)");
+        s.tasks[next].as_mut().unwrap().state = TaskState::Running;
+        s.current = next;
+        let old = core::ptr::addr_of_mut!(s.tasks[current].as_mut().unwrap().context);
+        let new = core::ptr::addr_of!(s.tasks[next].as_ref().unwrap().context);
+        let next_satp = s.tasks[next].as_ref().unwrap().satp;
+        (old, new, next_satp)
+    });
+    // SAFETY: as in yield_now/exit_current — distinct 'static contexts, the
+    // kernel is mapped in both address spaces, single hart, interrupts off.
+    // Execution resumes here when a peer wakes this task.
+    unsafe {
+        crate::csr::satp_write(switch.2);
+        switch_context(switch.0, switch.1);
+    }
+}
+
+/// Service a `recv` syscall. `a0` (= `frame.regs[9]`) is the capability
+/// index of the endpoint. If a sender is already waiting, take its message
+/// and wake it; otherwise block until one arrives. On return the message
+/// is in the ABI registers (or `a0 = usize::MAX` if the capability check
+/// failed).
+#[cfg(target_arch = "riscv64")]
+pub fn ipc_recv(frame: &mut crate::trap::TrapFrame) {
+    let cap_idx = frame.regs[9];
+    let step = SCHED.with(|s| {
+        let cur = s.current;
+        let ep = match cap_lookup(&s.tasks[cur].as_ref().unwrap().caps, cap_idx) {
+            Some(ep) => ep,
+            None => return RecvStep::BadCap,
+        };
+        match find_blocked(s, ep, IpcRole::Send) {
+            Some(si) => {
+                let msg = s.tasks[si].as_ref().unwrap().message;
+                s.tasks[si].as_mut().unwrap().state = TaskState::Ready;
+                RecvStep::Got(msg)
+            }
+            None => {
+                crate::println!("ipc: '{}' blocks on recv", s.tasks[cur].as_ref().unwrap().name);
+                RecvStep::Block(ep)
+            }
+        }
+    });
+    match step {
+        RecvStep::BadCap => frame.regs[9] = usize::MAX,
+        RecvStep::Got(msg) => write_message(frame, msg),
+        RecvStep::Block(ep) => {
+            block_current(ep, IpcRole::Recv);
+            // Woken: a sender stored our inbox and set us Ready.
+            let msg = SCHED.with(|s| s.tasks[s.current].as_ref().unwrap().message);
+            write_message(frame, msg);
+        }
+    }
+}
+
+/// Service a `send` syscall. `a0` = capability index, `a1` = badge,
+/// `a2..a4` = data. If a receiver is waiting, deliver to it and wake it;
+/// otherwise block until one arrives. `a0` becomes `0` on success or
+/// `usize::MAX` if the capability check failed.
+#[cfg(target_arch = "riscv64")]
+pub fn ipc_send(frame: &mut crate::trap::TrapFrame) {
+    let cap_idx = frame.regs[9];
+    let msg = Message {
+        badge: frame.regs[10],
+        data: [frame.regs[11], frame.regs[12], frame.regs[13]],
+    };
+    let step = SCHED.with(|s| {
+        let cur = s.current;
+        let ep = match cap_lookup(&s.tasks[cur].as_ref().unwrap().caps, cap_idx) {
+            Some(ep) => ep,
+            None => {
+                crate::println!(
+                    "ipc: '{}' send rejected (no capability)",
+                    s.tasks[cur].as_ref().unwrap().name
+                );
+                return SendStep::BadCap;
+            }
+        };
+        match find_blocked(s, ep, IpcRole::Recv) {
+            Some(ri) => {
+                crate::println!(
+                    "ipc: '{}' -> '{}' badge {:#x}",
+                    s.tasks[cur].as_ref().unwrap().name,
+                    s.tasks[ri].as_ref().unwrap().name,
+                    msg.badge
+                );
+                s.tasks[ri].as_mut().unwrap().message = msg;
+                s.tasks[ri].as_mut().unwrap().state = TaskState::Ready;
+                SendStep::Delivered
+            }
+            None => {
+                s.tasks[cur].as_mut().unwrap().message = msg;
+                SendStep::Block(ep)
+            }
+        }
+    });
+    match step {
+        SendStep::BadCap => frame.regs[9] = usize::MAX,
+        SendStep::Delivered => frame.regs[9] = 0,
+        SendStep::Block(ep) => {
+            block_current(ep, IpcRole::Send);
+            frame.regs[9] = 0; // a receiver took our message and woke us
+        }
+    }
 }
 
 #[cfg(test)]
