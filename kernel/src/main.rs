@@ -44,25 +44,43 @@ mod bare {
         wx_probe();
         frame_roundtrip();
 
-        // Phase 3b-i: one run queue holding a kernel idle task and four
-        // U-mode tasks. ping/pong cooperate via the yield syscall and exit
-        // cleanly; bad reaches into kernel memory and is contained; hog
-        // never yields, so the first timer tick preempts a U-mode task.
-        // Spawn order puts ping in slot 0, so enter() runs it first.
-        // addr_of! forms each static stack's top address WITHOUT a reference
-        // (no unsafe, no static_mut_refs lint) — the existing 2c/3a pattern.
-        sched::spawn_user("ping", user_ping,
-            core::ptr::addr_of!(US_PING) as usize + USER_STACK_SIZE,
-            core::ptr::addr_of!(KS_PING) as usize + TASK_STACK);
-        sched::spawn_user("pong", user_pong,
-            core::ptr::addr_of!(US_PONG) as usize + USER_STACK_SIZE,
-            core::ptr::addr_of!(KS_PONG) as usize + TASK_STACK);
-        sched::spawn_user("hog", user_hog,
-            core::ptr::addr_of!(US_HOG) as usize + USER_STACK_SIZE,
-            core::ptr::addr_of!(KS_HOG) as usize + TASK_STACK);
-        sched::spawn_user("bad", user_bad,
-            core::ptr::addr_of!(US_BAD) as usize + USER_STACK_SIZE,
-            core::ptr::addr_of!(KS_BAD) as usize + TASK_STACK);
+        // Phase 3b-ii: each U-mode task runs in its OWN address space. We
+        // build a private page table per task (kernel cloned in, shared
+        // .user_text, plus only that task's stack + data page), then spawn
+        // it with that satp. ping/pong cooperate via yield and exit; hog is
+        // preempted; snoop follows a pointer (in its own page) into pong's
+        // data page — unmapped in snoop's space — and is contained. idle is
+        // a kernel task on the master satp. Built here on the master satp
+        // (new page-table frames come from free RAM, which only it maps).
+        use core::mem::size_of;
+        let region = |base: usize, size: usize| (base, base + size);
+
+        let us_ping = region(core::ptr::addr_of!(US_PING) as usize, size_of::<UStack>());
+        let ud_ping = region(core::ptr::addr_of!(UD_PING) as usize, size_of::<UData>());
+        let ping_satp = mem::build_user_space(us_ping, ud_ping);
+        sched::spawn_user("ping", user_ping, us_ping.1,
+            core::ptr::addr_of!(KS_PING) as usize + TASK_STACK, ping_satp);
+
+        let us_pong = region(core::ptr::addr_of!(US_PONG) as usize, size_of::<UStack>());
+        let ud_pong = region(core::ptr::addr_of!(UD_PONG) as usize, size_of::<UData>());
+        let pong_satp = mem::build_user_space(us_pong, ud_pong);
+        sched::spawn_user("pong", user_pong, us_pong.1,
+            core::ptr::addr_of!(KS_PONG) as usize + TASK_STACK, pong_satp);
+
+        let us_hog = region(core::ptr::addr_of!(US_HOG) as usize, size_of::<UStack>());
+        let ud_hog = region(core::ptr::addr_of!(UD_HOG) as usize, size_of::<UData>());
+        let hog_satp = mem::build_user_space(us_hog, ud_hog);
+        sched::spawn_user("hog", user_hog, us_hog.1,
+            core::ptr::addr_of!(KS_HOG) as usize + TASK_STACK, hog_satp);
+
+        // snoop's data page holds a pointer to pong's data page; snoop's
+        // tree maps SNOOP_TARGET but NOT pong's page, so following it faults.
+        let us_snoop = region(core::ptr::addr_of!(US_SNOOP) as usize, size_of::<UStack>());
+        let snoop_data = region(core::ptr::addr_of!(SNOOP_TARGET) as usize, size_of::<Snoop>());
+        let snoop_satp = mem::build_user_space(us_snoop, snoop_data);
+        sched::spawn_user("snoop", user_snoop, us_snoop.1,
+            core::ptr::addr_of!(KS_SNOOP) as usize + TASK_STACK, snoop_satp);
+
         sched::spawn("idle", idle, core::ptr::addr_of!(KS_IDLE) as usize + TASK_STACK);
 
         timer::start();
@@ -125,36 +143,66 @@ mod bare {
     type KStack = [u8; TASK_STACK];
 
     /// One kernel/trap stack per U-mode task, plus one for the idle task.
+    /// In .bss → mapped global by map_kernel_sections, so a task traps onto
+    /// its own kernel stack in its own address space.
     static mut KS_PING: KStack = [0; TASK_STACK];
     static mut KS_PONG: KStack = [0; TASK_STACK];
     static mut KS_HOG: KStack = [0; TASK_STACK];
-    static mut KS_BAD: KStack = [0; TASK_STACK];
+    static mut KS_SNOOP: KStack = [0; TASK_STACK];
     static mut KS_IDLE: KStack = [0; TASK_STACK];
 
-    /// U-mode task stacks live in `.user_data` so mem::init maps them RW-U.
+    /// A page-aligned U-mode stack (2 pages). Page alignment is required so
+    /// each task's stack occupies its OWN pages — the unit of isolation.
     const USER_STACK_SIZE: usize = 8 * 1024;
-    type UStack = [u8; USER_STACK_SIZE];
+    #[repr(C, align(4096))]
+    struct UStack([u8; USER_STACK_SIZE]);
     #[link_section = ".user_data"]
-    static mut US_PING: UStack = [0; USER_STACK_SIZE];
+    static mut US_PING: UStack = UStack([0; USER_STACK_SIZE]);
     #[link_section = ".user_data"]
-    static mut US_PONG: UStack = [0; USER_STACK_SIZE];
+    static mut US_PONG: UStack = UStack([0; USER_STACK_SIZE]);
     #[link_section = ".user_data"]
-    static mut US_HOG: UStack = [0; USER_STACK_SIZE];
+    static mut US_HOG: UStack = UStack([0; USER_STACK_SIZE]);
     #[link_section = ".user_data"]
-    static mut US_BAD: UStack = [0; USER_STACK_SIZE];
+    static mut US_SNOOP: UStack = UStack([0; USER_STACK_SIZE]);
 
-    /// Messages the U-mode tasks ask the kernel to print. In `.user_data`
-    /// (R-U) so the confused-deputy guard accepts their pointers and the
-    /// SUM-window copy can read them. Each ends in '\n'; lengths are exact.
-    /// All entries share the 13-byte element type; the hog messages use two
-    /// spaces after "hog" to reach that length (a 12-byte literal would fail
-    /// to compile).
+    /// A page-aligned 4 KiB U-mode data page. Each task gets its own so its
+    /// data is page-isolated from every other task. The message bytes sit
+    /// at the start; the rest is zero.
+    #[repr(C, align(4096))]
+    struct UData([u8; 4096]);
+
+    /// Fill a 4 KiB page with `prefix` at the front, zero after (const so
+    /// the page is a link-time constant in .user_data, not a runtime write).
+    const fn page_with(prefix: &[u8]) -> [u8; 4096] {
+        let mut p = [0u8; 4096];
+        let mut i = 0;
+        while i < prefix.len() {
+            p[i] = prefix[i];
+            i += 1;
+        }
+        p
+    }
+
     #[link_section = ".user_data"]
-    static PING_MSG: [[u8; 13]; 2] = [*b"user: ping 0\n", *b"user: ping 1\n"];
+    static UD_PING: UData = UData(page_with(b"user: ping\n"));
     #[link_section = ".user_data"]
-    static PONG_MSG: [[u8; 13]; 2] = [*b"user: pong 0\n", *b"user: pong 1\n"];
+    static UD_PONG: UData = UData(page_with(b"user: pong\n"));
     #[link_section = ".user_data"]
-    static HOG_MSG: [[u8; 13]; 2] = [*b"user: hog  0\n", *b"user: hog  1\n"];
+    static UD_HOG: UData = UData(page_with(b"user: hog\n"));
+
+    /// Length of each task's message (bytes to print): "user: ping\n" and
+    /// "user: pong\n" are 11; "user: hog\n" is 10.
+    const PING_LEN: usize = 11;
+    const PONG_LEN: usize = 11;
+    const HOG_LEN: usize = 10;
+
+    /// A page-aligned page holding a pointer into pong's data page. Mapped
+    /// into snoop's address space (R-U); pong's page is NOT — so snoop can
+    /// load the pointer from its own page but faults when it dereferences.
+    #[repr(C, align(4096))]
+    struct Snoop(&'static u8);
+    #[link_section = ".user_data"]
+    static SNOOP_TARGET: Snoop = Snoop(&UD_PONG.0[0]);
 
     /// Print syscall (a7 = 1): a0 = ptr, a1 = len. `inline(always)` so it
     /// folds into the user entry and the `.user_text` page stays
@@ -198,48 +246,48 @@ mod bare {
         core::arch::asm!("ecall", in("a7") 3usize, options(nostack));
     }
 
-    /// Cooperating U-mode task: print two lines, yielding to its peer
-    /// between each, then exit cleanly.
+    /// Cooperating U-mode task: print its own data page twice, yielding to
+    /// its peer between each, then exit cleanly. In its own address space.
     #[no_mangle]
     #[link_section = ".user_text"]
     extern "C" fn user_ping() -> ! {
-        // SAFETY: PING_MSG is in .user_data (R-U); we pass addresses the
-        // kernel validates and reads. yield/exit are always sound.
+        // SAFETY: UD_PING is mapped R-U in this task's space; the kernel
+        // validates the pointer (it lies in .user_data) and reads it.
         unsafe {
-            sys_print(PING_MSG[0].as_ptr(), PING_MSG[0].len());
+            sys_print(core::ptr::addr_of!(UD_PING) as *const u8, PING_LEN);
             sys_yield();
-            sys_print(PING_MSG[1].as_ptr(), PING_MSG[1].len());
+            sys_print(core::ptr::addr_of!(UD_PING) as *const u8, PING_LEN);
             sys_yield();
             sys_exit(0)
         }
     }
 
-    /// Peer of `user_ping`: same protocol (print two lines, yielding between
-    /// each, then exit cleanly) — the two interleave to prove round-robin.
+    /// Peer of `user_ping`: same protocol — the two interleave to prove
+    /// round-robin, now each in its own address space.
     #[no_mangle]
     #[link_section = ".user_text"]
     extern "C" fn user_pong() -> ! {
         // SAFETY: see `user_ping`.
         unsafe {
-            sys_print(PONG_MSG[0].as_ptr(), PONG_MSG[0].len());
+            sys_print(core::ptr::addr_of!(UD_PONG) as *const u8, PONG_LEN);
             sys_yield();
-            sys_print(PONG_MSG[1].as_ptr(), PONG_MSG[1].len());
+            sys_print(core::ptr::addr_of!(UD_PONG) as *const u8, PONG_LEN);
             sys_yield();
             sys_exit(0)
         }
     }
 
     /// The hog: two cooperative rounds, then spin forever without yielding.
-    /// The timer must preempt it (it is the sole non-yielder once ping/pong
-    /// exit), which proves a U-mode task is preemptible.
+    /// The timer preempts it (proving a U-mode task is preemptible, now
+    /// across an address-space switch).
     #[no_mangle]
     #[link_section = ".user_text"]
     extern "C" fn user_hog() -> ! {
         // SAFETY: see `user_ping`.
         unsafe {
-            sys_print(HOG_MSG[0].as_ptr(), HOG_MSG[0].len());
+            sys_print(core::ptr::addr_of!(UD_HOG) as *const u8, HOG_LEN);
             sys_yield();
-            sys_print(HOG_MSG[1].as_ptr(), HOG_MSG[1].len());
+            sys_print(core::ptr::addr_of!(UD_HOG) as *const u8, HOG_LEN);
             sys_yield();
         }
         loop {
@@ -247,29 +295,24 @@ mod bare {
         }
     }
 
-    /// The misbehaving U-mode task: load a byte from kernel address space.
-    /// The kernel page is non-U, so the U-mode load faults and the kernel
-    /// contains the task (it never reaches the exit below); the scheduler
-    /// keeps running.
+    /// The cross-task snooper: follow a pointer (kept in our OWN mapped page)
+    /// into another task's data page. That page is not mapped in our address
+    /// space, so the load faults in U-mode and the kernel contains us while
+    /// the others keep running — the isolation proof.
     ///
-    /// We use inline asm for the load instead of `read_volatile` to guarantee
-    /// the instruction is emitted here (in `.user_text`) and not called out to
-    /// a kernel-text helper — in a debug build the latter would generate a
-    /// `jalr` into kernel `.text`, which faults as InstructionPageFault before
-    /// the load can fault as LoadPageFault.
+    /// `lb` is inline asm (not `read_volatile`, which a debug build may turn
+    /// into a `jalr` into kernel text → the wrong fault). It faults in U-mode
+    /// before retiring; control never returns here.
     #[no_mangle]
     #[link_section = ".user_text"]
-    extern "C" fn user_bad() -> ! {
-        // 0x80200000 is the kernel .text base (mapped R-X-G, no U bit).
-        // The lb faults in U-mode with LoadPageFault before retiring.
-        // Control never returns here; the scheduler contains this task.
+    extern "C" fn user_snoop() -> ! {
+        let target: *const u8 = SNOOP_TARGET.0;
+        let _v: u8;
+        // SAFETY: deliberate cross-task isolation probe; the lb faults in
+        // U-mode (the target page is unmapped in our space) before it
+        // completes, so control never returns.
         unsafe {
-            core::arch::asm!(
-                "lb {tmp}, 0({addr})",
-                addr = in(reg) 0x8020_0000usize,
-                tmp = out(reg) _,
-                options(nostack),
-            );
+            core::arch::asm!("lb {v}, 0({p})", v = out(reg) _v, p = in(reg) target, options(nostack));
             sys_exit(0) // unreachable: the load above faults first
         }
     }

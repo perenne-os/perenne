@@ -67,11 +67,16 @@ finale. Each sub-phase gets its own design → plan → build cycle.
   while the scheduler keeps running, and a U-mode task preempted by the
   timer — all in one boot, alongside the 2a/2b/2c milestones.
 
-#### Phase 3b-ii — Per-address-space isolation
+#### Phase 3b-ii — Per-address-space isolation  *(done — 2026-06-19)*
 
-- **Goal:** each component gets its own `satp`; the kernel is mapped into
+- **Goal:** each component gets its own `satp`; the kernel is cloned into
   every address space; `satp` swaps on context switch.
-- **Done when:** two tasks cannot read each other's memory.
+- **You learn:** that `PTE_G` is only a TLB hint, building per-task page
+  tables, swapping `satp` in the context switch (see
+  [learning note 0008](../learning/0008-address-space-isolation.md)).
+- **Done when:** `./tools/test-qemu.ps1` observes the 3b-i run-queue proofs
+  (now each under its own `satp`) plus a `snoop` task that reaches into
+  another task's memory being contained — all in one boot.
 
 #### Phase 3b-iii — Capabilities + synchronous IPC + blocking
 

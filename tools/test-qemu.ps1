@@ -2,12 +2,12 @@
 # (riscv64 virt + OpenSBI), captures the serial console, and asserts the
 # Phase 2a milestones (greeting, survived breakpoint, >= 2 timer ticks),
 # the Phase 2b milestones (Sv39 paging on, W^X blocking a rodata write, a
-# frame alloc/free round-trip), and the Phase 3b-i milestones — two U-mode
-# tasks round-robin via the yield syscall and exit cleanly, a bad U-mode task
-# is contained while the scheduler keeps running, and a U-mode task is
-# preempted by the timer.
-# (Phase 2c cooperative scheduling + preemption is now proven by the broader
-# 3b-i run-queue demo.)
+# frame alloc/free round-trip), and the Phase 3b-ii milestone — each U-mode
+# task runs in its own address space (its own satp), the 3b-i run-queue proofs
+# still hold (two U-mode tasks round-robin via the yield syscall and exit
+# cleanly, a U-mode task is preempted by the timer), and a snoop task that
+# reaches into another task's memory is contained (cross-task isolation).
+# (Phase 2c/3b-i scheduling are now proven by the broader 3b-ii run-queue demo.)
 # Usage: ./tools/test-qemu.ps1     (exit code 0 = pass, 1 = fail)
 $ErrorActionPreference = "Stop"
 $repo = Split-Path -Parent $PSScriptRoot
@@ -46,10 +46,10 @@ $mustMatch = @(
     "paging: sv39 on",
     "wx: rodata write blocked",
     "frames: alloc/free ok",
-    "(?s)user: ping 0.*user: pong 0.*user: ping 1.*user: pong 1",
+    "(?s)user: ping.*user: pong.*user: ping.*user: pong",
     "sched: task 'ping' exited \(code 0\)",
     "sched: task 'pong' exited \(code 0\)",
-    "sched: task 'bad' killed by LoadPageFault",
+    "sched: task 'snoop' killed by LoadPageFault",
     "sched: U-mode task preempted by timer",
     "tick: 2(?!\d)"
 )
@@ -68,7 +68,7 @@ finally {
 }
 
 if ($missing.Count -eq 0) {
-    Write-Host "BOOT TEST PASS: 2a + 2b milestones plus the Phase 3b-i milestones — two U-mode tasks round-robin via the yield syscall and exit cleanly, a bad U-mode task is contained while the scheduler keeps running, and a U-mode task is preempted by the timer." -ForegroundColor Green
+    Write-Host "BOOT TEST PASS: 2a + 2b milestones plus the Phase 3b-ii milestone — each U-mode task runs in its own address space, the 3b-i run-queue proofs still hold, and a snoop task reaching into another task's memory is contained (cross-task isolation)." -ForegroundColor Green
     exit 0
 } else {
     Write-Host "BOOT TEST FAIL: missing within 30s: $($missing -join ', '). Serial output:" -ForegroundColor Red

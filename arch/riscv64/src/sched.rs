@@ -152,6 +152,7 @@ pub fn spawn(name: &'static str, entry: extern "C" fn() -> !, stack_top: usize) 
             state: TaskState::Ready,
             stack_top,
             name,
+            satp: crate::mem::kernel_satp(),
         });
     });
 }
@@ -182,17 +183,23 @@ pub fn yield_now() {
         s.current = next;
         let old = core::ptr::addr_of_mut!(s.tasks[current].as_mut().unwrap().context);
         let new = core::ptr::addr_of!(s.tasks[next].as_ref().unwrap().context);
-        Some((old, new))
+        let next_satp = s.tasks[next].as_ref().unwrap().satp;
+        Some((old, new, next_satp))
     });
 
-    if let Some((old, new)) = switch {
+    if let Some((old, new, next_satp)) = switch {
         // SAFETY: both pointers address `Context`s inside the 'static
         // SCHED, valid for the whole program. `next != current` above
         // guarantees `old` and `new` are distinct slots, so they never
         // alias. Single hart + the disabled interrupts above mean no
-        // other code touches them while the assembly runs. Execution
-        // resumes here when this task is picked again.
-        unsafe { switch_context(old, new) };
+        // other code touches them while the assembly runs. The next task's
+        // tree maps every kernel address (map_kernel_sections), so swapping
+        // satp before the switch is seamless. Execution resumes here when
+        // this task is picked again.
+        unsafe {
+            crate::csr::satp_write(next_satp);
+            switch_context(old, new);
+        }
     }
 
     if had_interrupts {
@@ -214,17 +221,22 @@ pub fn enter() -> ! {
     // first task re-enables interrupts in `task_trampoline`.
     let _ = unsafe { crate::csr::sstatus_disable_interrupts() };
 
-    let first = SCHED.with(|s| {
+    let (first, first_satp) = SCHED.with(|s| {
         s.current = 0;
         let t = s.tasks[0].as_mut().expect("enter() with no spawned task");
         t.state = TaskState::Running;
-        core::ptr::addr_of!(t.context)
+        (core::ptr::addr_of!(t.context), t.satp)
     });
 
     let mut throwaway = Context::zeroed();
-    // SAFETY: `first` addresses a Context in the 'static SCHED; the
-    // throwaway is a valid (never-restored) save target on this stack.
-    unsafe { switch_context(core::ptr::addr_of_mut!(throwaway), first) };
+    // SAFETY: switch into the first task's address space (the kernel is
+    // mapped in it), then into its context. `first` addresses a Context in
+    // the 'static SCHED; the throwaway is a valid (never-restored) save
+    // target on this stack.
+    unsafe {
+        crate::csr::satp_write(first_satp);
+        switch_context(core::ptr::addr_of_mut!(throwaway), first);
+    }
     unreachable!("enter() never returns to the bootstrap context");
 }
 
@@ -277,6 +289,7 @@ pub fn spawn_user(
     entry: extern "C" fn() -> !,
     user_sp: usize,
     kstack_top: usize,
+    satp: usize,
 ) {
     SCHED.with(|s| {
         let slot = s
@@ -296,6 +309,7 @@ pub fn spawn_user(
             state: TaskState::Ready,
             stack_top: kstack_top,
             name,
+            satp,
         });
     });
 }
@@ -327,14 +341,19 @@ pub fn exit_current(reason: ExitReason) -> ! {
         // Save into the dying slot's own context (never resumed).
         let old = core::ptr::addr_of_mut!(s.tasks[current].as_mut().unwrap().context);
         let new = core::ptr::addr_of!(s.tasks[next].as_ref().unwrap().context);
-        (old, new)
+        let next_satp = s.tasks[next].as_ref().unwrap().satp;
+        (old, new, next_satp)
     });
     // SAFETY: the `assert_ne!` above guarantees `old` and `new` are distinct
     // slots, so they never alias; both are 'static contexts in SCHED. The
     // dying (old) slot is never run again, so its saved state is irrelevant.
     // Single hart + interrupts off in the trap handler mean nothing else
-    // touches them. Control resumes in `next`.
-    unsafe { switch_context(switch.0, switch.1) };
+    // touches them. The next task's tree maps every kernel address, so the
+    // satp switch is seamless. Control resumes in `next`.
+    unsafe {
+        crate::csr::satp_write(switch.2);
+        switch_context(switch.0, switch.1);
+    }
     unreachable!("exit_current resumes in the next task, never here")
 }
 
@@ -343,7 +362,7 @@ mod tests {
     use super::*;
 
     fn task(name: &'static str, state: TaskState) -> Task {
-        Task { context: Context::zeroed(), state, stack_top: 0, name }
+        Task { context: Context::zeroed(), state, stack_top: 0, name, satp: 0 }
     }
 
     /// Three ready tasks in slots 0..3, slot 3 empty; `current` running.

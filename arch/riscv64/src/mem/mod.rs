@@ -5,7 +5,7 @@
 //! gated to `target_arch = "riscv64"`.
 
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 pub mod frame;
 pub mod paging;
@@ -56,6 +56,12 @@ impl<T> SingleHartCell<T> {
 #[cfg(target_arch = "riscv64")]
 const RAM_END: usize = 0x8800_0000;
 
+/// The master kernel `satp`, saved by [`init`] and handed to kernel
+/// (S-mode) tasks via [`kernel_satp`]. Per-task user spaces clone the
+/// kernel into their own trees (see [`build_user_space`]).
+#[cfg(target_arch = "riscv64")]
+static KERNEL_SATP: AtomicUsize = AtomicUsize::new(0);
+
 #[cfg(target_arch = "riscv64")]
 extern "C" {
     static __text_start: u8;
@@ -85,15 +91,42 @@ macro_rules! sym {
     };
 }
 
+/// Identity-map the kernel *image* — `.text` R-X, `.rodata` R, `.data`/
+/// `.bss` RW, the boot stack RW — all **global** (`PTE_G`), into `root`.
+/// Reused by the master table and by every per-task user tree (the kernel
+/// must be present in every address space because `PTE_G` is only a TLB
+/// hint, not a substitute for the mapping existing in the walked tree).
+/// Deliberately excludes free RAM and the user sections.
+///
+/// # Safety
+/// `root` must point at a valid (zeroed/in-construction) page table; called
+/// with free RAM identity-mapped (MMU off in `init`, or the master `satp`
+/// when building a user tree) so the page-table writes land.
+#[cfg(target_arch = "riscv64")]
+unsafe fn map_kernel_sections(root: *mut paging::PageTable) {
+    use paging::{PTE_G, PTE_R, PTE_W, PTE_X};
+    // SAFETY: forwarded; all ranges are kernel.ld symbols, page-aligned.
+    // The guard page between __data_end and __stack_start stays unmapped:
+    // stack overflow faults instead of corrupting .bss.
+    unsafe {
+        paging::map_range(root, sym!(__text_start), sym!(__text_end), PTE_R | PTE_X | PTE_G);
+        paging::map_range(root, sym!(__rodata_start), sym!(__rodata_end), PTE_R | PTE_G);
+        paging::map_range(root, sym!(__data_start), sym!(__data_end), PTE_R | PTE_W | PTE_G);
+        paging::map_range(root, sym!(__stack_start), sym!(__stack_top), PTE_R | PTE_W | PTE_G);
+    }
+}
+
 /// Bring memory management up: arm the frame allocator over free RAM,
-/// identity-map the kernel with W^X section permissions, enable Sv39.
+/// build the master kernel page table (kernel image + free RAM, all
+/// global; the user sections belong to per-task trees now — see
+/// [`build_user_space`]), enable Sv39, and save the kernel `satp`.
 ///
 /// Call exactly once, after `trap::init()` (a paging mistake should
 /// fault loudly, not hang) and before `timer::start()` (no interrupts
 /// while the world is being remapped).
 #[cfg(target_arch = "riscv64")]
 pub fn init() {
-    use paging::{PTE_G, PTE_R, PTE_U, PTE_W, PTE_X};
+    use paging::{PTE_G, PTE_R, PTE_W};
 
     // SAFETY: all sym! calls read linker-script symbol addresses (not
     // their contents) from kernel.ld; the ranges are 4 KiB-aligned by
@@ -105,23 +138,50 @@ pub fn init() {
 
         let root = frame::alloc_zeroed().expect("no frame for root page table").0
             as *mut paging::PageTable;
-        paging::map_range(root, sym!(__text_start), sym!(__text_end), PTE_R | PTE_X | PTE_G);
-        paging::map_range(root, sym!(__rodata_start), sym!(__rodata_end), PTE_R | PTE_G);
-        paging::map_range(root, sym!(__data_start), sym!(__data_end), PTE_R | PTE_W | PTE_G);
-        // The guard page between __data_end and __stack_start stays
-        // unmapped: stack overflow faults instead of corrupting .bss.
-        paging::map_range(root, sym!(__stack_start), sym!(__stack_top), PTE_R | PTE_W | PTE_G);
+        map_kernel_sections(root);
         // Free RAM mapped eagerly so allocated frames are immediately
-        // usable — no fault-and-map machinery in 2b.
+        // usable — no fault-and-map machinery in 2b. The master table
+        // (used by the kernel and at boot) needs it; per-task user trees
+        // deliberately do NOT map free RAM (see build_user_space).
         paging::map_range(root, free_ram.0, free_ram.1, PTE_R | PTE_W | PTE_G);
-        // Phase 3a: the embedded user image gets the U bit so a U-mode
-        // task can fetch/read/write it. NOT global (G): user mappings are
-        // not shared across address spaces. text R-X-U, data RW-U. Empty
-        // until kmain places code/data here (start == end maps nothing).
-        paging::map_range(root, sym!(__user_text_start), sym!(__user_text_end), PTE_R | PTE_X | PTE_U);
-        paging::map_range(root, sym!(__user_data_start), sym!(__user_data_end), PTE_R | PTE_W | PTE_U);
+
         // SAFETY: everything the kernel touches is now identity-mapped.
-        crate::csr::satp_write(crate::csr::SATP_MODE_SV39 | (root as usize >> 12));
+        let satp = paging::make_satp(root as usize);
+        KERNEL_SATP.store(satp, Ordering::Release);
+        crate::csr::satp_write(satp);
+    }
+}
+
+/// The master kernel `satp`, for kernel (S-mode) tasks. Valid after
+/// [`init`].
+#[cfg(target_arch = "riscv64")]
+pub fn kernel_satp() -> usize {
+    KERNEL_SATP.load(Ordering::Acquire)
+}
+
+/// Build a private address space for one U-mode task and return its `satp`.
+/// The tree clones the kernel image (global), maps the shared `.user_text`
+/// (R-X-U) code, and maps this task's own page-aligned `stack` (RW-U) and
+/// `data` page (R-U). Other tasks' pages are absent → a cross-task access
+/// faults. Both regions are half-open `(start, end)`, page-aligned.
+///
+/// Call at spawn time, while the master `satp` is active (the new tree's
+/// frames come from free RAM, which only the master table maps).
+#[cfg(target_arch = "riscv64")]
+pub fn build_user_space(stack: (usize, usize), data: (usize, usize)) -> usize {
+    use paging::{PTE_R, PTE_U, PTE_W, PTE_X};
+    // SAFETY: a fresh zeroed root; map_kernel_sections + the user ranges
+    // are valid (linker symbols / page-aligned statics); built on the
+    // master satp so the page-table writes (in free RAM) land.
+    unsafe {
+        let root = frame::alloc_zeroed()
+            .expect("no frame for user root page table")
+            .0 as *mut paging::PageTable;
+        map_kernel_sections(root);
+        paging::map_range(root, sym!(__user_text_start), sym!(__user_text_end), PTE_R | PTE_X | PTE_U);
+        paging::map_range(root, stack.0, stack.1, PTE_R | PTE_W | PTE_U);
+        paging::map_range(root, data.0, data.1, PTE_R | PTE_U);
+        paging::make_satp(root as usize)
     }
 }
 
