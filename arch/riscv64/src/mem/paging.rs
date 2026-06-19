@@ -19,6 +19,17 @@ pub const PTE_G: u64 = 1 << 5; // global: valid in every address space
 pub const PTE_A: u64 = 1 << 6; // accessed
 pub const PTE_D: u64 = 1 << 7; // dirty
 
+/// `satp` mode field (bits 63:60) selecting Sv39 translation.
+pub const SATP_SV39: usize = 8 << 60;
+
+/// Build the `satp` value that points translation at the root page table
+/// physically at `root_pa` (4 KiB-aligned) in Sv39 mode: mode field |
+/// root PPN (`root_pa >> 12`). Pure (host-tested); the gated callers pass
+/// it to `csr::satp_write`.
+pub fn make_satp(root_pa: usize) -> usize {
+    SATP_SV39 | (root_pa >> 12)
+}
+
 /// The 9-bit page-table index for `va` at `level` (2 = root, 0 = leaf).
 pub fn vpn(va: usize, level: usize) -> usize {
     (va >> (12 + 9 * level)) & 0x1ff
@@ -150,6 +161,15 @@ mod tests {
     #[test]
     fn zero_pte_is_invalid() {
         assert!(!pte_is_valid(0));
+    }
+
+    #[test]
+    fn make_satp_sets_mode_and_ppn() {
+        // root at 0x8020_0000: ppn = 0x80200; mode field (bits 63:60) = 8.
+        let satp = make_satp(0x8020_0000);
+        assert_eq!(satp, (8usize << 60) | 0x80200);
+        assert_eq!(satp >> 60, 8, "mode field = Sv39");
+        assert_eq!(satp & 0xFFF_FFFF_FFFF, 0x80200, "ppn = root >> 12");
     }
 
     #[test]
