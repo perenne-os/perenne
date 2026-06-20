@@ -50,6 +50,9 @@ Plain-language definitions of terms used throughout these docs. Aimed at someone
 - **UART** — the serial-port controller that turns bytes into the serial line signal; the kernel's text console.
 - **ns16550** — the ubiquitous 16550-family UART (QEMU virt and many boards), programmed via a few byte registers spaced by `reg-shift`.
 - **`THR` / `LSR` / `THRE`** — the 16550 transmit-holding register (where you write a byte), the line-status register, and its "holding register empty" bit (`0x20`) the driver polls before transmitting.
+- **User-space component / server** — an unprivileged task that provides a service or drives a device, reached over capability-checked IPC; the unit of extension per [ADR 0007](decisions/0007-extensibility-user-space-components.md). Adding one neither grows nor endangers the trusted core.
+- **Device driver (as a component)** — such a component whose authority is a device's MMIO mapped into its address space (and nowhere else) plus an IPC endpoint — so isolation and capabilities bound exactly what it can touch and who can call it. The first one is the RTC driver.
+- **RTC (real-time clock)** — a hardware clock giving wall-clock time; here the goldfish RTC, owned by the first user-space driver component.
 - **Physical address** — a real location in RAM chips. Before Phase 2b, the only kind of address the kernel had.
 - **Virtual address** — the address code actually uses once the MMU is on; translated to a physical address through page tables on every access.
 - **Page / frame** — the same 4 KiB unit seen from two sides: a *page* is virtual, a *frame* is the physical RAM behind it.

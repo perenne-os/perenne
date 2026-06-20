@@ -138,6 +138,31 @@ first in QEMU; physical-board bring-up follows once a board is in hand.
 (If the RISC-V board route stalls, the owned x86-64 laptop remains a
 separate, larger option — a new `arch/x86_64` with its own boot/discovery.)
 
+## User-space components — realizing ADR 0007
+
+The payoff of the capability microkernel: features and drivers live *outside*
+the kernel as capability-holding user-space components
+([ADR 0007](../decisions/0007-extensibility-user-space-components.md)). Each
+shrinks the trusted core and is bounded by what it was granted. This is also
+the substrate the self-healer (Phase 5) runs on.
+
+### First component — RTC time driver  *(done — 2026-06-20)*
+
+- **Goal:** move a real driver out of the kernel — a U-mode component that
+  owns the goldfish RTC (its MMIO mapped into that component only) and serves
+  a time-read over a capability-checked endpoint.
+- **You learn:** a driver is an unprivileged task with a device mapping + an
+  IPC endpoint; isolation + capabilities bound its authority; and U-mode code
+  must avoid kernel `.text`/`.rodata` (inline asm for MMIO; report via exit
+  code) (see [learning note 0013](../learning/0013-first-user-space-component.md)).
+- **Done when:** `./tools/test-qemu.ps1` shows the RTC component block on
+  recv, then read and report the live clock on a client's capability-checked
+  request, with a rogue (no capability) refused. QEMU-only; no board.
+
+(Next candidates: a virtio-rng entropy component — real crypto entropy,
+retiring Phase 3c's fixed seed — and call/reply IPC so a server can return a
+value to the caller instead of via its exit code.)
+
 ## Phase 5 — Self-healing seed
 
 - **Goal:** the first working diagnosis/knowledge system reading the `knowledge-base/` schema.

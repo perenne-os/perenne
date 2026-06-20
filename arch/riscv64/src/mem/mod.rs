@@ -180,14 +180,17 @@ pub fn kernel_satp() -> usize {
 
 /// Build a private address space for one U-mode task and return its `satp`.
 /// The tree clones the kernel image (global), maps the shared `.user_text`
-/// (R-X-U) code, and maps this task's own page-aligned `stack` (RW-U) and
-/// `data` page (R-U). Other tasks' pages are absent → a cross-task access
-/// faults. Both regions are half-open `(start, end)`, page-aligned.
+/// (R-X-U) code, this task's own page-aligned `stack` (RW-U), and one
+/// per-component `device` page (R-U) — a read-only data page, or a device's
+/// MMIO that this component exclusively owns (mapped here and nowhere else,
+/// so it is the component's device "capability"). Other tasks' pages are
+/// absent → a cross-task or cross-device access faults. Both regions are
+/// half-open `(start, end)`, page-aligned; pass `(0, 0)` for none.
 ///
 /// Call at spawn time, while the master `satp` is active (the new tree's
 /// frames come from free RAM, which only the master table maps).
 #[cfg(target_arch = "riscv64")]
-pub fn build_user_space(stack: (usize, usize), data: (usize, usize)) -> usize {
+pub fn build_user_space(stack: (usize, usize), device: (usize, usize)) -> usize {
     use paging::{PTE_R, PTE_U, PTE_W, PTE_X};
     // SAFETY: a fresh zeroed root; map_kernel_sections + the user ranges
     // are valid (linker symbols / page-aligned statics); built on the
@@ -199,7 +202,7 @@ pub fn build_user_space(stack: (usize, usize), data: (usize, usize)) -> usize {
         map_kernel_sections(root);
         paging::map_range(root, sym!(__user_text_start), sym!(__user_text_end), PTE_R | PTE_X | PTE_U);
         paging::map_range(root, stack.0, stack.1, PTE_R | PTE_W | PTE_U);
-        paging::map_range(root, data.0, data.1, PTE_R | PTE_U);
+        paging::map_range(root, device.0, device.1, PTE_R | PTE_U);
         paging::make_satp(root as usize)
     }
 }

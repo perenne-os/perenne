@@ -14,6 +14,7 @@ pub struct MachineInfo {
     pub timebase_hz: u64,
     pub uart_base: usize,
     pub uart_reg_shift: u32,
+    pub rtc_base: usize,
 }
 
 const FDT_MAGIC: u32 = 0xd00d_feed;
@@ -48,13 +49,14 @@ fn read_cells(val: &[u8], off: usize, cells: usize) -> Option<u64> {
 }
 
 /// Parse an FDT blob for [`MachineInfo`]: RAM (`/memory` `reg`), the timer
-/// frequency (`timebase-frequency`), and the console UART (the `ns16550`-
-/// compatible node's `reg` base + `reg-shift`). Returns `None` on a bad
-/// magic, a truncated/oversized field (every offset is bounds-checked, so a
-/// malformed blob never reads out of bounds), or any missing value. The
-/// `/memory` `reg` is decoded using the root's `#address-cells`/
-/// `#size-cells` (default 2/2 per the FDT spec). Memory is matched by node
-/// name; the UART by its `compatible` property (committed at `END_NODE`).
+/// frequency (`timebase-frequency`), the console UART (the `ns16550`-
+/// compatible node's `reg` base + `reg-shift`), and the RTC (the `goldfish`-
+/// compatible node's `reg` base). Returns `None` on a bad magic, a
+/// truncated/oversized field (every offset is bounds-checked, so a malformed
+/// blob never reads out of bounds), or any missing value. The `/memory`
+/// `reg` is decoded using the root's `#address-cells`/`#size-cells`
+/// (default 2/2 per the FDT spec). Memory is matched by node name; the UART
+/// and RTC by their `compatible` property (committed at `END_NODE`).
 pub fn parse(dtb: &[u8]) -> Option<MachineInfo> {
     if be_u32(dtb, 0)? != FDT_MAGIC {
         return None;
@@ -77,6 +79,8 @@ pub fn parse(dtb: &[u8]) -> Option<MachineInfo> {
     let mut node_reg: Option<usize> = None;
     let mut node_shift: u32 = 0;
     let mut uart: Option<(usize, u32)> = None;
+    let mut node_is_rtc = false;
+    let mut rtc: Option<usize> = None;
 
     loop {
         let tok = be_u32(dtb, pos)?;
@@ -92,12 +96,18 @@ pub fn parse(dtb: &[u8]) -> Option<MachineInfo> {
                 node_is_uart = false;
                 node_reg = None;
                 node_shift = 0;
+                node_is_rtc = false;
                 pos = (pos + name_len + 1 + 3) & !3; // past name + NUL, 4-pad
             }
             FDT_END_NODE => {
                 if node_is_uart && uart.is_none() {
                     if let Some(b) = node_reg {
                         uart = Some((b, node_shift));
+                    }
+                }
+                if node_is_rtc && rtc.is_none() {
+                    if let Some(b) = node_reg {
+                        rtc = Some(b);
                     }
                 }
                 depth = depth.checked_sub(1)?;
@@ -134,6 +144,9 @@ pub fn parse(dtb: &[u8]) -> Option<MachineInfo> {
                 if pname == b"compatible" && val.windows(7).any(|w| w == b"ns16550") {
                     node_is_uart = true;
                 }
+                if pname == b"compatible" && val.windows(8).any(|w| w == b"goldfish") {
+                    node_is_rtc = true;
+                }
                 if pname == b"reg-shift" && len >= 4 {
                     node_shift = be_u32(val, 0)?;
                 }
@@ -152,6 +165,7 @@ pub fn parse(dtb: &[u8]) -> Option<MachineInfo> {
         timebase_hz: timebase?,
         uart_base,
         uart_reg_shift,
+        rtc_base: rtc?,
     })
 }
 
@@ -186,6 +200,7 @@ mod tests {
         assert_eq!(mi.timebase_hz, 10_000_000, "timebase 10 MHz");
         assert_eq!(mi.uart_base, 0x1000_0000, "uart base");
         assert_eq!(mi.uart_reg_shift, 0, "uart reg-shift");
+        assert_eq!(mi.rtc_base, 0x10_1000, "rtc base");
     }
 
     #[test]
