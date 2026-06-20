@@ -354,7 +354,16 @@ pub fn exit_current(reason: ExitReason) -> ! {
                 crate::println!("sched: task '{}' exited (code {code})", s.tasks[current].as_ref().unwrap().name)
             }
             ExitReason::Killed(cause) => {
-                crate::println!("sched: task '{}' killed by {cause:?}", s.tasks[current].as_ref().unwrap().name)
+                crate::println!("sched: task '{}' killed by {cause:?}", s.tasks[current].as_ref().unwrap().name);
+                // Phase 5a: consult the deterministic knowledge organism and
+                // log the diagnosis (no action yet — the caged restart is 5b).
+                match crate::heal::diagnose(cause) {
+                    Some(issue) => crate::println!(
+                        "heal: diagnosed {} ({}) -> playbook: {}",
+                        issue.id, issue.title, issue.playbook
+                    ),
+                    None => crate::println!("heal: no known issue for {cause:?} (recorded for triage)"),
+                }
             }
         }
         s.tasks[current].as_mut().unwrap().state = TaskState::Exited;

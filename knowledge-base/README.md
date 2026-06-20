@@ -23,7 +23,8 @@ knowledge-base/
     ├── KB-0001.md         SSH commit-signing on Windows (also the worked example)
     ├── KB-0002.md         SSH push transport on Windows (twin of KB-0001)
     ├── KB-0003.md         Windows SDK / kernel32.lib linker error
-    └── KB-0004.md         SSH signature verification (allowed_signers)
+    ├── KB-0004.md         SSH signature verification (allowed_signers)
+    └── KB-0005.md         user-space component killed by a fault (first runtime entry)
 ```
 
 ## Status (Phase 0)

@@ -92,6 +92,13 @@ mod bare {
             core::ptr::addr_of!(KS_ROGUE) as usize + TASK_STACK,
             mem::build_user_space(ru, NO_DEVICE));
 
+        // A deliberately faulty component, to exercise self-healing: it
+        // crashes (is contained), and the kernel diagnoses the crash (5a).
+        let fu = ustack(core::ptr::addr_of!(US_FLAKY) as usize);
+        let _flaky = sched::spawn_user("flaky", flaky_task, fu.1,
+            core::ptr::addr_of!(KS_FLAKY) as usize + TASK_STACK,
+            mem::build_user_space(fu, NO_DEVICE));
+
         sched::spawn("idle", idle, core::ptr::addr_of!(KS_IDLE) as usize + TASK_STACK);
 
         timer::init(machine.timebase_hz);
@@ -173,6 +180,7 @@ mod bare {
     static mut KS_RTC: KStack = [0; TASK_STACK];
     static mut KS_CLIENT: KStack = [0; TASK_STACK];
     static mut KS_ROGUE: KStack = [0; TASK_STACK];
+    static mut KS_FLAKY: KStack = [0; TASK_STACK];
     static mut KS_IDLE: KStack = [0; TASK_STACK];
 
     /// A page-aligned U-mode stack (2 pages), so each task's stack occupies
@@ -187,6 +195,8 @@ mod bare {
     static mut US_CLIENT: UStack = UStack([0; USER_STACK_SIZE]);
     #[link_section = ".user_data"]
     static mut US_ROGUE: UStack = UStack([0; USER_STACK_SIZE]);
+    #[link_section = ".user_data"]
+    static mut US_FLAKY: UStack = UStack([0; USER_STACK_SIZE]);
 
     /// Exit syscall (a7 = 2): a0 = code. Never returns.
     ///
@@ -311,6 +321,28 @@ mod bare {
         unsafe {
             let r = sys_send(EP_CAP, 0xdead);
             sys_exit(if r == usize::MAX { 7 } else { 0 })
+        }
+    }
+
+    /// A deliberately faulty component: it reads a kernel address it does not
+    /// own, faults (LoadPageFault), and is contained — the "patient" the
+    /// self-healing organism diagnoses. Inline asm (not read_volatile) keeps
+    /// the load in `.user_text` (a U-mode task can't call kernel code).
+    #[no_mangle]
+    #[link_section = ".user_text"]
+    extern "C" fn flaky_task() -> ! {
+        let _v: u8;
+        // SAFETY: the deliberate fault. 0x80200000 is the kernel .text base
+        // (no U bit); the U-mode load faults before completing and the kernel
+        // contains this component. Control never returns here.
+        unsafe {
+            core::arch::asm!(
+                "lb {v}, 0({p})",
+                v = out(reg) _v,
+                p = in(reg) 0x8020_0000usize,
+                options(nostack),
+            );
+            sys_exit(0) // unreachable: the load faults first
         }
     }
 

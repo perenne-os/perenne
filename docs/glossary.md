@@ -34,6 +34,8 @@ Plain-language definitions of terms used throughout these docs. Aimed at someone
 - **ADR (Architecture Decision Record)** — a short, dated note recording one significant decision and the reasoning behind it.
 - **Self-healing / knowledge organism** — this project's support model: the OS keeps a growing memory of issues and proven fixes and consults itself to diagnose and repair problems.
 - **Safety cage** — the rule that every automated self-healing action must be capability-checked, logged, reversible, and auditable, so the healer can never gain unchecked power.
+- **Playbook** — the ordered, reversible set of fix steps recorded for a known issue; what the self-healer applies (inside the safety cage) once a problem is diagnosed.
+- **Diagnosis (rule engine)** — the deterministic, explainable matching of an observed symptom (e.g. a fault cause) to a known issue — a transparent table lookup, never a black box. In this kernel it is `heal::diagnose`, which is why it is safe to run in the kernel itself.
 - **Accelerator (GPU / NPU / TPU / QPU)** — a specialized coprocessor a normal CPU offloads work to (graphics, AI math, or quantum operations). Treated as a *device*, not something an OS runs on.
 - **Trap** — the CPU's "stop and handle this" mechanism: on an exceptional event the hart jumps to the kernel's registered handler. Exceptions and interrupts are the two flavors.
 - **Exception** — a synchronous trap caused by the current instruction itself (e.g. a breakpoint or an illegal instruction).
