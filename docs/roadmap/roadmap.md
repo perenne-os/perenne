@@ -165,9 +165,31 @@ value to the caller instead of via its exit code.)
 
 ## Phase 5 — Self-healing seed
 
-- **Goal:** the first working diagnosis/knowledge system reading the `knowledge-base/` schema.
-- **You learn:** deterministic rule engines, the safety-cage discipline.
-- **Done when:** the OS can match a known issue to a playbook and apply a caged, reversible fix.
+The soul of the project ([ADR 0005](../decisions/0005-self-healing-knowledge-organism.md)):
+the OS diagnoses and fixes its own issues, deterministically and inside a
+safety cage. Decomposed (2026-06-20) in the trust-preserving order —
+diagnose before act.
+
+### Phase 5a — Detect + deterministic diagnosis  *(done — 2026-06-20)*
+
+- **Goal:** when the kernel contains a crashed component, match the crash to
+  a known issue (a compiled-in knowledge record) and log the diagnosis +
+  playbook. No action.
+- **You learn:** the containment path is the detection point; a deterministic,
+  host-tested rule engine turns a fault into an explainable diagnosis (see
+  [learning note 0014](../learning/0014-self-healing-diagnosis.md)).
+- **Done when:** `./tools/test-qemu.ps1` shows a deliberately faulty
+  component contained and diagnosed (matched to KB-0005), with the rest of
+  the system running on. QEMU-only.
+
+### Phase 5b — The caged fix
+
+- **Goal:** an isolated, capability-gated **user-space** healer that the
+  kernel notifies of a crash and that applies the playbook — a **bounded,
+  reversible, logged** restart — recovering the component.
+- **Done when:** a crashing component is automatically restarted by the
+  healer and resumes working, with the restart bounded (it gives up and
+  flags after N attempts).
 
 ## Phase 6+ — Breadth
 

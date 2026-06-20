@@ -23,3 +23,4 @@ This folder holds the author's learning notes as systems-programming concepts cl
 - [0011 — Discovering hardware from the device tree (Phase 4a)](0011-device-tree.md)
 - [0012 — A real UART console (Phase 4b)](0012-uart-console.md)
 - [0013 — The first user-space component: an RTC driver (ADR 0007)](0013-first-user-space-component.md)
+- [0014 — Self-healing, step one: diagnosis (Phase 5a)](0014-self-healing-diagnosis.md)
