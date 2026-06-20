@@ -41,6 +41,10 @@ pub mod syscall;
 /// consumes them lives in `sched`.
 pub mod cap;
 
+/// Device tree (FDT) parsing: discover RAM and the timer frequency from the
+/// firmware-provided blob (pure parsing host-tested; `from_ptr` gated).
+pub mod dt;
+
 /// The architecture identifier this crate targets.
 pub const ARCH: &str = "riscv64";
 
