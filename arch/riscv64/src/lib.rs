@@ -47,6 +47,11 @@ pub mod cap;
 /// firmware-provided blob (pure parsing host-tested; `from_ptr` gated).
 pub mod dt;
 
+/// The self-healing knowledge organism: the deterministic, host-tested rule
+/// engine that diagnoses a contained crash against compiled-in knowledge
+/// (Phase 5a — diagnosis only; the caged healer that acts is 5b).
+pub mod heal;
+
 /// The architecture identifier this crate targets.
 pub const ARCH: &str = "riscv64";
 
