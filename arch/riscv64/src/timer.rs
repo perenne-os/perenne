@@ -8,16 +8,20 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::{csr, sbi};
 
-/// The `time` CSR's tick rate on QEMU virt: 10 MHz. **QEMU-specific
-/// constant** — real hardware (Phase 4) must read the timebase from the
-/// device tree instead.
-const TIMEBASE_HZ: u64 = 10_000_000;
-
-/// One heartbeat per second (in `time` ticks, = 1 second at the 10 MHz timebase).
-const TICK_INTERVAL: u64 = TIMEBASE_HZ;
+/// Ticks between heartbeats (= the timebase frequency = one second),
+/// learned from the device tree by [`init`]. Zero until then — call `init`
+/// before [`start`]. (Phase 4a: replaces the old hardcoded 10 MHz QEMU
+/// constant; see [`crate::dt`].)
+static TICK_INTERVAL: AtomicU64 = AtomicU64::new(0);
 
 /// Monotonic count of timer interrupts since boot.
 static TICKS: AtomicU64 = AtomicU64::new(0);
+
+/// Record the platform timer frequency (from the device tree) as the
+/// one-second tick interval. Call once, before [`start`].
+pub fn init(timebase_hz: u64) {
+    TICK_INTERVAL.store(timebase_hz, Ordering::Relaxed);
+}
 
 /// Arm the first tick and enable timer interrupts.
 /// [`crate::trap::init`] must have been called first — enabling
@@ -48,5 +52,6 @@ fn arm_next() {
     // heartbeat. A real clock would use `prev_deadline + TICK_INTERVAL`.
     // If the computed deadline is somehow already past, SBI fires the
     // interrupt immediately — benign by contract.
-    sbi::set_timer(csr::time() + TICK_INTERVAL);
+    let interval = TICK_INTERVAL.load(Ordering::Relaxed);
+    sbi::set_timer(csr::time() + interval);
 }
