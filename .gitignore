@@ -7,7 +7,8 @@
 # Rust / Cargo build output
 /target/
 **/target/
-Cargo.lock
+# Cargo.lock is committed (Phase 3c): an audited crypto dependency entered
+# the tree, so the exact resolved versions must be reproducible.
 
 # Editor / OS noise
 .vscode/

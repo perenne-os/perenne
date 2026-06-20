@@ -1,3 +1,4 @@
+#![cfg_attr(not(test), no_std)]
 //! Cryptographic primitives for the Kernel project.
 //!
 //! Phase 0 placeholder. Per ADR 0004, this will provide a post-quantum
