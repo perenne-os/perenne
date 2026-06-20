@@ -36,6 +36,11 @@ pub mod sched;
 /// inside.
 pub mod syscall;
 
+/// Capabilities: unforgeable per-task authority tokens (pure types and the
+/// lookup, host-tested). The tables live on tasks; the IPC rendezvous that
+/// consumes them lives in `sched`.
+pub mod cap;
+
 /// The architecture identifier this crate targets.
 pub const ARCH: &str = "riscv64";
 

@@ -78,12 +78,21 @@ finale. Each sub-phase gets its own design → plan → build cycle.
   (now each under its own `satp`) plus a `snoop` task that reaches into
   another task's memory being contained — all in one boot.
 
-#### Phase 3b-iii — Capabilities + synchronous IPC + blocking
+#### Phase 3b-iii — Capabilities + synchronous IPC + blocking  *(done — 2026-06-20)*
 
 - **Goal:** unforgeable capability tokens, capability-checked syscalls, a
   synchronous send/recv endpoint, and blocking/wait-queue task states.
-- **Done when:** two isolated components communicate only through
-  capability-checked IPC.
+- **You learn:** capabilities as unforgeable table indices, the synchronous
+  rendezvous, and blocking inside a syscall (see
+  [learning note 0009](../learning/0009-capabilities-and-ipc.md)).
+- **Done when:** `./tools/test-qemu.ps1` observes two isolated U-mode
+  components communicating only through a capability-checked endpoint (the
+  server blocks on recv; the client's value crosses address spaces and the
+  server exits with it) and a rogue without the capability rejected — all in
+  one boot.
+
+With 3b-iii done, **Phase 3b (capabilities & IPC) is complete**, and the
+Phase 3 security spine stands but for the PQC primitive (3c).
 
 ### Phase 3c — PQC primitive
 

@@ -19,6 +19,10 @@ pub enum Syscall {
     Exit,
     /// `yield()` — give up the CPU to the next ready task.
     Yield,
+    /// `send(cap, badge, data..)` — synchronous IPC send.
+    Send,
+    /// `recv(cap)` — synchronous IPC receive.
+    Recv,
     /// An unrecognized syscall number (a user bug, not a kernel bug).
     Unknown(usize),
 }
@@ -29,6 +33,8 @@ pub fn decode_syscall(a7: usize) -> Syscall {
         1 => Syscall::Print,
         2 => Syscall::Exit,
         3 => Syscall::Yield,
+        4 => Syscall::Send,
+        5 => Syscall::Recv,
         n => Syscall::Unknown(n),
     }
 }
@@ -100,6 +106,12 @@ mod tests {
     fn accepts_a_zero_length_buffer_at_a_valid_pointer() {
         assert!(validate_user_buffer(0x1000, 0x2000, 0x1100, 0));
     }
+
+    #[test]
+    fn decodes_send_and_recv() {
+        assert_eq!(decode_syscall(4), Syscall::Send);
+        assert_eq!(decode_syscall(5), Syscall::Recv);
+    }
 }
 
 /// What the trap handler should do after a syscall returns.
@@ -137,6 +149,14 @@ pub fn dispatch(frame: &mut crate::trap::TrapFrame) -> Outcome {
         }
         Syscall::Exit => Outcome::Exit(a0),
         Syscall::Yield => Outcome::Yield,
+        Syscall::Send => {
+            crate::sched::ipc_send(frame);
+            Outcome::Resume
+        }
+        Syscall::Recv => {
+            crate::sched::ipc_recv(frame);
+            Outcome::Resume
+        }
         Syscall::Unknown(_) => {
             frame.regs[9] = usize::MAX; // -1: unknown syscall
             Outcome::Resume

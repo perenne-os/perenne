@@ -11,6 +11,8 @@
 //! Pure here (host-testable). The field order is a binary contract with
 //! the `switch_context` assembly; the test at the bottom pins it.
 
+use crate::cap::Capability;
+
 /// The saved callee-saved registers of a parked task.
 ///
 /// Field order and size are the contract with `sched`'s `switch_context`
@@ -45,6 +47,32 @@ pub enum TaskState {
     /// again; the slot is skipped by `pick_next`. Stacks are not reclaimed
     /// (reaping is deferred).
     Exited,
+    /// Waiting at an IPC rendezvous on `endpoint` as a sender or receiver.
+    /// Non-`Ready`, so `pick_next` skips it until a peer wakes it.
+    Blocked { endpoint: crate::cap::EndpointId, role: IpcRole },
+}
+
+/// Number of capability slots in each task's table (its CSpace).
+pub const CAP_SLOTS: usize = 4;
+
+/// A register-only IPC message: a badge plus three data words, transferred
+/// sender→receiver with no memory access.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Message {
+    pub badge: usize,
+    pub data: [usize; 3],
+}
+
+impl Message {
+    /// The all-zero message (a task's default in-flight slot).
+    pub const EMPTY: Self = Self { badge: 0, data: [0; 3] };
+}
+
+/// Which side of an IPC rendezvous a blocked task is waiting on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IpcRole {
+    Send,
+    Recv,
 }
 
 /// Why a U-mode task stopped running. Passed to `sched::exit_current` by the
@@ -100,6 +128,12 @@ pub struct Task {
     /// The `satp` (address space) to load when this task runs. Kernel tasks
     /// carry the master kernel `satp`; U-mode tasks carry their private one.
     pub satp: usize,
+    /// This task's capability table (CSpace). A syscall names a kernel
+    /// object by an index into this table — the only authority it has.
+    pub caps: [Option<Capability>; CAP_SLOTS],
+    /// In-flight IPC message: a task's outbox while it blocks sending, or
+    /// its inbox when a sender delivers to it.
+    pub message: Message,
 }
 
 #[cfg(test)]
