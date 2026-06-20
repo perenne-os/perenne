@@ -8,7 +8,9 @@
 # receives across address spaces and exits with), and a rogue task lacking
 # the endpoint capability is rejected — and the Phase 3c milestone: an
 # ML-KEM-768 post-quantum key-encapsulation round-trip runs on the bare
-# kernel (shared secret agreed).
+# kernel (shared secret agreed) — and the Phase 4a milestone: the kernel
+# discovers RAM (192 MiB, proving it read the device tree, not a hardcoded
+# 128) and the timer frequency from the device tree.
 # (Earlier scheduling/isolation proofs are subsumed by this IPC demo, which
 # still runs each task in its own address space.)
 # Usage: ./tools/test-qemu.ps1     (exit code 0 = pass, 1 = fail)
@@ -34,7 +36,7 @@ function Read-LogText($path) {
 
 $qemu = Start-Process qemu-system-riscv64 -PassThru -NoNewWindow -ArgumentList @(
     "-machine", "virt",
-    "-m", "128M",
+    "-m", "192M",
     "-display", "none",
     "-serial", "file:$serialLog",
     "-bios", "default",
@@ -54,6 +56,7 @@ $mustMatch = @(
     "sched: task 'rogue' exited \(code 7\)",
     "sched: task 'client' exited \(code 0\)",
     "pqc: ML-KEM-768 round-trip ok",
+    "dt: 192 MiB RAM",
     "tick: 2(?!\d)"
 )
 $missing = $mustMatch
@@ -71,7 +74,7 @@ finally {
 }
 
 if ($missing.Count -eq 0) {
-    Write-Host "BOOT TEST PASS: 2a + 2b + the Phase 3b-iii IPC milestone (capability-checked synchronous IPC; rogue rejected) and the Phase 3c milestone (an ML-KEM-768 post-quantum round-trip runs on the bare kernel)." -ForegroundColor Green
+    Write-Host "BOOT TEST PASS: 2a + 2b + the Phase 3b-iii IPC milestone, the Phase 3c ML-KEM round-trip, and the Phase 4a milestone (the kernel discovers 192 MiB RAM + the timebase from the device tree)." -ForegroundColor Green
     exit 0
 } else {
     Write-Host "BOOT TEST FAIL: missing within 30s: $($missing -join ', '). Serial output:" -ForegroundColor Red

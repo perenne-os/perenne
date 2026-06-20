@@ -49,13 +49,6 @@ impl<T> SingleHartCell<T> {
     }
 }
 
-/// End of RAM on QEMU virt with `-m 128M` (pinned by the run/test
-/// scripts). **QEMU-specific constant** like timer.rs's TIMEBASE_HZ —
-/// real hardware (Phase 4) must read the memory map from the device
-/// tree instead.
-#[cfg(target_arch = "riscv64")]
-const RAM_END: usize = 0x8800_0000;
-
 /// The master kernel `satp`, saved by [`init`] and handed to kernel
 /// (S-mode) tasks via [`kernel_satp`]. Per-task user spaces clone the
 /// kernel into their own trees (see [`build_user_space`]).
@@ -121,11 +114,15 @@ unsafe fn map_kernel_sections(root: *mut paging::PageTable) {
 /// global; the user sections belong to per-task trees now — see
 /// [`build_user_space`]), enable Sv39, and save the kernel `satp`.
 ///
+/// `ram_end` is the (exclusive) end of physical RAM, discovered from the
+/// device tree (`ram_base + ram_size`) rather than hardcoded — see
+/// [`crate::dt`].
+///
 /// Call exactly once, after `trap::init()` (a paging mistake should
 /// fault loudly, not hang) and before `timer::start()` (no interrupts
 /// while the world is being remapped).
 #[cfg(target_arch = "riscv64")]
-pub fn init() {
+pub fn init(ram_end: usize) {
     use paging::{PTE_G, PTE_R, PTE_W};
 
     // SAFETY: all sym! calls read linker-script symbol addresses (not
@@ -133,7 +130,7 @@ pub fn init() {
     // the linker script. The MMU is still off, so writes land in the
     // physical addresses we own.
     unsafe {
-        let free_ram = (sym!(__kernel_end), RAM_END);
+        let free_ram = (sym!(__kernel_end), ram_end);
         frame::ALLOCATOR.with(|a| a.init(free_ram.0, free_ram.1));
 
         let root = frame::alloc_zeroed().expect("no frame for root page table").0

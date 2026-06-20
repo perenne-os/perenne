@@ -43,6 +43,9 @@ Plain-language definitions of terms used throughout these docs. Aimed at someone
 - **`sret`** — the return-from-trap instruction: restores the pre-trap privilege mode and jumps back to `sepc`.
 - **`ebreak`** — the RISC-V breakpoint instruction; Phase 2a triggers one on purpose to prove trap recovery works.
 - **Timebase** — the fixed rate the `time` counter ticks at (10 MHz on QEMU virt), independent of CPU clock speed; deadlines for timer interrupts are expressed in these ticks.
+- **Device tree / FDT (flattened device tree)** — a firmware-provided data structure describing the hardware (CPUs, memory, devices) that a portable kernel reads at boot instead of hardcoding values. The *flattened* form is a compact big-endian binary (header + a node/property token stream + a strings block); OpenSBI passes its address to the kernel in a register. Phase 4a parses it.
+- **`timebase-frequency`** — the device-tree property giving the rate of the `time` counter; the kernel reads it to derive timer deadlines (replacing the hardcoded timebase).
+- **Memory node** — the device-tree node whose `reg` property gives the RAM base address and size; the kernel reads it to learn how much memory it has.
 - **Physical address** — a real location in RAM chips. Before Phase 2b, the only kind of address the kernel had.
 - **Virtual address** — the address code actually uses once the MMU is on; translated to a physical address through page tables on every access.
 - **Page / frame** — the same 4 KiB unit seen from two sides: a *page* is virtual, a *frame* is the physical RAM behind it.
