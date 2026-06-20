@@ -104,9 +104,28 @@ Phase 3 security spine stands but for the PQC primitive (3c).
 
 ## Phase 4 — Real hardware
 
-- **Goal:** boot on real hardware — an owned x86-64 laptop (first port) or a cheap RISC-V board.
-- **You learn:** real boot/firmware, hardware quirks, porting via `arch/` and `hal/`.
-- **Done when:** the kernel boots on a physical machine.
+Decomposed (2026-06-20), continuing the RISC-V path (ADR 0003: one
+architecture well before a second). The hardware-agnostic groundwork is done
+first in QEMU; physical-board bring-up follows once a board is in hand.
+
+### Phase 4a — Device-tree-driven discovery  *(done — 2026-06-20)*
+
+- **Goal:** read RAM base/size and the timer frequency from the firmware's
+  device tree instead of hardcoding QEMU's values.
+- **You learn:** the FDT binary format and why a portable kernel discovers
+  its machine from firmware (see [learning note 0011](../learning/0011-device-tree.md)).
+- **Done when:** `./tools/test-qemu.ps1` (booting `-m 192M`) shows the kernel
+  discover 192 MiB of RAM and the timebase from the device tree, with the
+  parser host-tested against a real QEMU DTB. QEMU-only; no board.
+
+### Phase 4b — Real UART + board bring-up
+
+- **Goal:** discover the console UART from the device tree and drive real
+  serial; boot on a physical RISC-V board (needs buying one).
+- **Done when:** the kernel boots and prints on real hardware.
+
+(If the RISC-V board route stalls, the owned x86-64 laptop remains a
+separate, larger option — a new `arch/x86_64` with its own boot/discovery.)
 
 ## Phase 5 — Self-healing seed
 
