@@ -12,6 +12,8 @@ pub struct MachineInfo {
     pub ram_base: usize,
     pub ram_size: usize,
     pub timebase_hz: u64,
+    pub uart_base: usize,
+    pub uart_reg_shift: u32,
 }
 
 const FDT_MAGIC: u32 = 0xd00d_feed;
@@ -36,11 +38,23 @@ fn cstr_len(buf: &[u8], off: usize) -> Option<usize> {
     Some(i - off)
 }
 
-/// Parse an FDT blob for [`MachineInfo`]. Returns `None` on a bad magic, a
-/// truncated/oversized field (every offset is bounds-checked, so a
-/// malformed blob never reads out of bounds), or a missing value. The
+/// Read `cells` big-endian u32s starting at `off` in `val` as one integer.
+fn read_cells(val: &[u8], off: usize, cells: usize) -> Option<u64> {
+    let mut n: u64 = 0;
+    for i in 0..cells {
+        n = (n << 32) | be_u32(val, off + i * 4)? as u64;
+    }
+    Some(n)
+}
+
+/// Parse an FDT blob for [`MachineInfo`]: RAM (`/memory` `reg`), the timer
+/// frequency (`timebase-frequency`), and the console UART (the `ns16550`-
+/// compatible node's `reg` base + `reg-shift`). Returns `None` on a bad
+/// magic, a truncated/oversized field (every offset is bounds-checked, so a
+/// malformed blob never reads out of bounds), or any missing value. The
 /// `/memory` `reg` is decoded using the root's `#address-cells`/
-/// `#size-cells` (default 2/2 per the FDT spec).
+/// `#size-cells` (default 2/2 per the FDT spec). Memory is matched by node
+/// name; the UART by its `compatible` property (committed at `END_NODE`).
 pub fn parse(dtb: &[u8]) -> Option<MachineInfo> {
     if be_u32(dtb, 0)? != FDT_MAGIC {
         return None;
@@ -56,6 +70,14 @@ pub fn parse(dtb: &[u8]) -> Option<MachineInfo> {
     let mut ram: Option<(usize, usize)> = None;
     let mut timebase: Option<u64> = None;
 
+    // The UART is matched by its `compatible` property (which can appear in
+    // any order within a node), so buffer per-node state and commit it when
+    // the node closes — unlike the name-matched `/memory` node.
+    let mut node_is_uart = false;
+    let mut node_reg: Option<usize> = None;
+    let mut node_shift: u32 = 0;
+    let mut uart: Option<(usize, u32)> = None;
+
     loop {
         let tok = be_u32(dtb, pos)?;
         pos += 4;
@@ -67,9 +89,17 @@ pub fn parse(dtb: &[u8]) -> Option<MachineInfo> {
                 if depth < is_mem.len() {
                     is_mem[depth] = name.starts_with(b"memory");
                 }
+                node_is_uart = false;
+                node_reg = None;
+                node_shift = 0;
                 pos = (pos + name_len + 1 + 3) & !3; // past name + NUL, 4-pad
             }
             FDT_END_NODE => {
+                if node_is_uart && uart.is_none() {
+                    if let Some(b) = node_reg {
+                        uart = Some((b, node_shift));
+                    }
+                }
                 depth = depth.checked_sub(1)?;
             }
             FDT_PROP => {
@@ -90,19 +120,22 @@ pub fn parse(dtb: &[u8]) -> Option<MachineInfo> {
                 if pname == b"timebase-frequency" && len >= 4 {
                     timebase = Some(be_u32(val, 0)? as u64);
                 }
-                if depth < is_mem.len() && is_mem[depth] && pname == b"reg" {
-                    let (ac, sc) = (addr_cells as usize, size_cells as usize);
-                    if len >= (ac + sc) * 4 {
-                        let mut base: u64 = 0;
-                        for i in 0..ac {
-                            base = (base << 32) | be_u32(val, i * 4)? as u64;
-                        }
-                        let mut sz: u64 = 0;
-                        for i in 0..sc {
-                            sz = (sz << 32) | be_u32(val, (ac + i) * 4)? as u64;
-                        }
-                        ram = Some((base as usize, sz as usize));
+                if pname == b"reg" && len >= addr_cells as usize * 4 {
+                    let base = read_cells(val, 0, addr_cells as usize)? as usize;
+                    if depth < is_mem.len()
+                        && is_mem[depth]
+                        && len >= (addr_cells + size_cells) as usize * 4
+                    {
+                        let sz = read_cells(val, addr_cells as usize * 4, size_cells as usize)? as usize;
+                        ram = Some((base, sz));
                     }
+                    node_reg = Some(base);
+                }
+                if pname == b"compatible" && val.windows(7).any(|w| w == b"ns16550") {
+                    node_is_uart = true;
+                }
+                if pname == b"reg-shift" && len >= 4 {
+                    node_shift = be_u32(val, 0)?;
                 }
                 pos = (val_off + len + 3) & !3; // past value, 4-pad
             }
@@ -112,10 +145,13 @@ pub fn parse(dtb: &[u8]) -> Option<MachineInfo> {
         }
     }
 
+    let (uart_base, uart_reg_shift) = uart?;
     Some(MachineInfo {
         ram_base: ram?.0,
         ram_size: ram?.1,
         timebase_hz: timebase?,
+        uart_base,
+        uart_reg_shift,
     })
 }
 
@@ -148,6 +184,8 @@ mod tests {
         assert_eq!(mi.ram_base, 0x8000_0000, "ram base");
         assert_eq!(mi.ram_size, 128 * 1024 * 1024, "ram size 128 MiB");
         assert_eq!(mi.timebase_hz, 10_000_000, "timebase 10 MHz");
+        assert_eq!(mi.uart_base, 0x1000_0000, "uart base");
+        assert_eq!(mi.uart_reg_shift, 0, "uart reg-shift");
     }
 
     #[test]
