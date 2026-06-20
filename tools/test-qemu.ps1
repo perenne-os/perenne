@@ -10,10 +10,13 @@
 # ML-KEM-768 post-quantum key-encapsulation round-trip runs on the bare
 # kernel (shared secret agreed) — and the Phase 4a milestone: the kernel
 # discovers RAM (192 MiB, proving it read the device tree, not a hardcoded
-# 128) and the timer frequency from the device tree — and the Phase 4b
-# milestone: a direct ns16550 UART driver (discovered from the device tree)
-# carries all console output, replacing the SBI firmware console.
-# (Earlier scheduling/isolation proofs are subsumed by this IPC demo, which
+# 128) and the timer frequency from the device tree; the Phase 4b milestone:
+# a direct ns16550 UART driver carries all console output; and the first
+# user-space component (ADR 0007): an RTC driver running as an unprivileged
+# component that owns the clock (its MMIO mapped only into it) and serves
+# time-reads over a capability-checked endpoint — a rogue without the
+# capability is refused.
+# (Earlier IPC/isolation proofs are subsumed by this component demo, which
 # still runs each task in its own address space.)
 # Usage: ./tools/test-qemu.ps1     (exit code 0 = pass, 1 = fail)
 $ErrorActionPreference = "Stop"
@@ -53,10 +56,9 @@ $mustMatch = @(
     "paging: sv39 on",
     "wx: rodata write blocked",
     "frames: alloc/free ok",
-    "ipc: 'server' blocks on recv",
-    "sched: task 'server' exited \(code 66\)",
-    "sched: task 'rogue' exited \(code 7\)",
-    "sched: task 'client' exited \(code 0\)",
+    "ipc: 'rtc' blocks on recv",
+    "rtc: 0x[0-9a-f]{16}",
+    "ipc: 'rogue' send rejected \(no capability\)",
     "pqc: ML-KEM-768 round-trip ok",
     "console: ns16550a @ 0x10000000",
     "dt: 192 MiB RAM",
@@ -77,7 +79,7 @@ finally {
 }
 
 if ($missing.Count -eq 0) {
-    Write-Host "BOOT TEST PASS: 2a + 2b + Phase 3b-iii IPC + Phase 3c ML-KEM + Phase 4a device-tree discovery (192 MiB) + Phase 4b (a direct ns16550 UART driver carries all console output)." -ForegroundColor Green
+    Write-Host "BOOT TEST PASS: 2a + 2b + 3c ML-KEM + 4a device-tree (192 MiB) + 4b ns16550 console + the first user-space component (ADR 0007): an RTC driver serves the live clock over capability-checked IPC; a rogue is refused." -ForegroundColor Green
     exit 0
 } else {
     Write-Host "BOOT TEST FAIL: missing within 30s: $($missing -join ', '). Serial output:" -ForegroundColor Red
