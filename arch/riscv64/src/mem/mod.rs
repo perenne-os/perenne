@@ -55,6 +55,14 @@ impl<T> SingleHartCell<T> {
 #[cfg(target_arch = "riscv64")]
 static KERNEL_SATP: AtomicUsize = AtomicUsize::new(0);
 
+/// MMIO base of the console UART (from the device tree), saved by [`init`]
+/// so [`map_kernel_sections`] can map its page into the master table and
+/// every per-task tree — the kernel prints from trap handlers while a user
+/// task's `satp` is active, so the page must exist in all of them. Zero
+/// before `init`.
+#[cfg(target_arch = "riscv64")]
+static UART_MMIO_BASE: AtomicUsize = AtomicUsize::new(0);
+
 #[cfg(target_arch = "riscv64")]
 extern "C" {
     static __text_start: u8;
@@ -106,6 +114,14 @@ unsafe fn map_kernel_sections(root: *mut paging::PageTable) {
         paging::map_range(root, sym!(__rodata_start), sym!(__rodata_end), PTE_R | PTE_G);
         paging::map_range(root, sym!(__data_start), sym!(__data_end), PTE_R | PTE_W | PTE_G);
         paging::map_range(root, sym!(__stack_start), sym!(__stack_top), PTE_R | PTE_W | PTE_G);
+        // Device MMIO: the console UART, one page, R-W-G (kernel-only, not
+        // executable). Mapped in every tree because the kernel prints from
+        // trap handlers while a user task's satp is active. Unset (0) on the
+        // earliest path means "nothing to map yet".
+        let uart = UART_MMIO_BASE.load(Ordering::Acquire);
+        if uart != 0 {
+            paging::map_range(root, uart, uart + paging::PAGE_SIZE, PTE_R | PTE_W | PTE_G);
+        }
     }
 }
 
@@ -114,15 +130,16 @@ unsafe fn map_kernel_sections(root: *mut paging::PageTable) {
 /// global; the user sections belong to per-task trees now — see
 /// [`build_user_space`]), enable Sv39, and save the kernel `satp`.
 ///
-/// `ram_end` is the (exclusive) end of physical RAM, discovered from the
-/// device tree (`ram_base + ram_size`) rather than hardcoded — see
-/// [`crate::dt`].
+/// `ram_end` is the (exclusive) end of physical RAM and `uart_base` the
+/// console UART's MMIO base — both discovered from the device tree (see
+/// [`crate::dt`]). The UART page is mapped into the master table and every
+/// per-task tree (via [`map_kernel_sections`]).
 ///
 /// Call exactly once, after `trap::init()` (a paging mistake should
 /// fault loudly, not hang) and before `timer::start()` (no interrupts
 /// while the world is being remapped).
 #[cfg(target_arch = "riscv64")]
-pub fn init(ram_end: usize) {
+pub fn init(ram_end: usize, uart_base: usize) {
     use paging::{PTE_G, PTE_R, PTE_W};
 
     // SAFETY: all sym! calls read linker-script symbol addresses (not
@@ -130,6 +147,11 @@ pub fn init(ram_end: usize) {
     // the linker script. The MMU is still off, so writes land in the
     // physical addresses we own.
     unsafe {
+        // Record the UART base BEFORE building any page table, so
+        // map_kernel_sections maps its page into the master table (and,
+        // later, every per-task tree built by build_user_space).
+        UART_MMIO_BASE.store(uart_base, Ordering::Release);
+
         let free_ram = (sym!(__kernel_end), ram_end);
         frame::ALLOCATOR.with(|a| a.init(free_ram.0, free_ram.1));
 

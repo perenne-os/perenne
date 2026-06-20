@@ -21,3 +21,4 @@ This folder holds the author's learning notes as systems-programming concepts cl
 - [0009 — Capabilities and synchronous IPC (Phase 3b-iii)](0009-capabilities-and-ipc.md)
 - [0010 — A post-quantum primitive: ML-KEM (Phase 3c)](0010-post-quantum-crypto.md)
 - [0011 — Discovering hardware from the device tree (Phase 4a)](0011-device-tree.md)
+- [0012 — A real UART console (Phase 4b)](0012-uart-console.md)

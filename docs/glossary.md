@@ -46,6 +46,10 @@ Plain-language definitions of terms used throughout these docs. Aimed at someone
 - **Device tree / FDT (flattened device tree)** — a firmware-provided data structure describing the hardware (CPUs, memory, devices) that a portable kernel reads at boot instead of hardcoding values. The *flattened* form is a compact big-endian binary (header + a node/property token stream + a strings block); OpenSBI passes its address to the kernel in a register. Phase 4a parses it.
 - **`timebase-frequency`** — the device-tree property giving the rate of the `time` counter; the kernel reads it to derive timer deadlines (replacing the hardcoded timebase).
 - **Memory node** — the device-tree node whose `reg` property gives the RAM base address and size; the kernel reads it to learn how much memory it has.
+- **MMIO (memory-mapped I/O)** — device registers exposed at fixed physical addresses and accessed with ordinary loads/stores; in S-mode the kernel must map those pages into its page table (and, here, into every address space) before touching them.
+- **UART** — the serial-port controller that turns bytes into the serial line signal; the kernel's text console.
+- **ns16550** — the ubiquitous 16550-family UART (QEMU virt and many boards), programmed via a few byte registers spaced by `reg-shift`.
+- **`THR` / `LSR` / `THRE`** — the 16550 transmit-holding register (where you write a byte), the line-status register, and its "holding register empty" bit (`0x20`) the driver polls before transmitting.
 - **Physical address** — a real location in RAM chips. Before Phase 2b, the only kind of address the kernel had.
 - **Virtual address** — the address code actually uses once the MMU is on; translated to a physical address through page tables on every access.
 - **Page / frame** — the same 4 KiB unit seen from two sides: a *page* is virtual, a *frame* is the physical RAM behind it.

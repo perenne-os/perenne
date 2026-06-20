@@ -15,6 +15,8 @@ pub mod csr;
 pub mod sbi;
 #[cfg(target_arch = "riscv64")]
 pub mod timer;
+#[cfg(target_arch = "riscv64")]
+pub mod uart;
 
 /// Trap handling: pure decoding logic (no asm, host-testable); the gated parts (entry, dispatcher, init) live inside.
 pub mod trap;

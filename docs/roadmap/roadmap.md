@@ -118,10 +118,21 @@ first in QEMU; physical-board bring-up follows once a board is in hand.
   discover 192 MiB of RAM and the timebase from the device tree, with the
   parser host-tested against a real QEMU DTB. QEMU-only; no board.
 
-### Phase 4b — Real UART + board bring-up
+### Phase 4b — Direct ns16550 UART console  *(done — 2026-06-20)*
 
-- **Goal:** discover the console UART from the device tree and drive real
-  serial; boot on a physical RISC-V board (needs buying one).
+- **Goal:** discover the UART from the device tree and drive it directly
+  (MMIO), replacing the SBI firmware console.
+- **You learn:** memory-mapped I/O and a UART's transmit path, mapping
+  device memory into every address space, and matching a device-tree node by
+  property vs name (see [learning note 0012](../learning/0012-uart-console.md)).
+- **Done when:** `./tools/test-qemu.ps1` shows the console switch to the
+  discovered ns16550 and all output flow through the direct driver. QEMU-only;
+  no board.
+
+### Phase 4c — Physical board boot
+
+- **Goal:** an SD boot image (U-Boot/OpenSBI + kernel) on a real RISC-V
+  board; board-specific UART/quirks surface here.
 - **Done when:** the kernel boots and prints on real hardware.
 
 (If the RISC-V board route stalls, the owned x86-64 laptop remains a

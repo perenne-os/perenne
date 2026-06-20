@@ -18,7 +18,7 @@ mod bare {
     use core::panic::PanicInfo;
 
     use kernel::GREETING;
-    use kernel_arch_riscv64::{cap::Capability, dt, mem, println, sched, timer, trap};
+    use kernel_arch_riscv64::{cap::Capability, console, dt, mem, println, sched, timer, trap};
     use kernel_common::PROJECT_NAME;
 
     /// Rust entry, called from the boot assembly with the arguments
@@ -41,6 +41,11 @@ mod bare {
         // the frame allocator (armed inside mem::init below) has not yet
         // touched the blob's memory.
         let machine = unsafe { dt::from_ptr(dtb) };
+        // Phase 4b: switch the console from the SBI firmware path to the
+        // discovered UART. The MMU is still off, so these first direct writes
+        // hit the UART's physical MMIO; mem::init maps the page next.
+        console::use_uart(machine.uart_base, machine.uart_reg_shift);
+        println!("console: ns16550a @ {:#x} (device tree)", machine.uart_base);
         println!(
             "dt: {} MiB RAM @ {:#x}, timebase {} Hz",
             machine.ram_size >> 20,
@@ -48,7 +53,7 @@ mod bare {
             machine.timebase_hz
         );
 
-        mem::init(machine.ram_base + machine.ram_size);
+        mem::init(machine.ram_base + machine.ram_size, machine.uart_base);
         println!(
             "paging: sv39 on ({} of {} frames free)",
             mem::free_frames(),
