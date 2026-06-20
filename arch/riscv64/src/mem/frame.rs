@@ -1,15 +1,23 @@
 //! Physical frame allocation: a bitmap over 4 KiB frames.
 //!
-//! One bit per frame (set = allocated); 128 MiB of RAM needs only a
-//! 4 KiB bitmap. Chosen over the classic intrusive free-list because the
-//! core is pure logic (host-testable) and misuse — double-free,
-//! out-of-range free — panics loudly instead of corrupting silently.
+//! One bit per frame (set = allocated). Chosen over the classic intrusive
+//! free-list because the core is pure logic (host-testable) and misuse —
+//! double-free, out-of-range free — panics loudly instead of corrupting
+//! silently.
+//!
+//! The bitmap is a fixed `.bss` array sized for [`MAX_FRAMES`]; since RAM is
+//! now discovered from the device tree (Phase 4a), it must be large enough
+//! for whatever the firmware reports. A truly dynamic bitmap, bootstrapped
+//! in RAM sized to the discovered frame count, is deferred until real
+//! boards with very large RAM arrive (Phase 4b+).
 
 /// Size of one physical frame (and one page): 4 KiB.
 pub const FRAME_SIZE: usize = 4096;
 
-/// Worst case the bitmap must cover: 128 MiB / 4 KiB.
-const MAX_FRAMES: usize = 32_768;
+/// Largest RAM the static bitmap covers: 4 GiB / 4 KiB = 1,048,576 frames
+/// (a 128 KiB `.bss` bitmap). Comfortably covers the QEMU tests and typical
+/// RISC-V boards; `init` panics loudly if a machine ever reports more.
+const MAX_FRAMES: usize = 4 * 1024 * 1024 * 1024 / FRAME_SIZE;
 
 /// A physical frame, identified by its 4 KiB-aligned base address.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

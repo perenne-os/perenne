@@ -18,15 +18,15 @@ mod bare {
     use core::panic::PanicInfo;
 
     use kernel::GREETING;
-    use kernel_arch_riscv64::{cap::Capability, mem, println, sched, timer, trap};
+    use kernel_arch_riscv64::{cap::Capability, dt, mem, println, sched, timer, trap};
     use kernel_common::PROJECT_NAME;
 
     /// Rust entry, called from the boot assembly with the arguments
     /// OpenSBI gave us. Never returns: a kernel has nowhere to return to.
     #[no_mangle]
-    extern "C" fn kmain(hartid: usize, _dtb: usize) -> ! {
+    extern "C" fn kmain(hartid: usize, dtb: usize) -> ! {
         println!();
-        println!("{GREETING} from {PROJECT_NAME} - Phase 3b-iii (hart {hartid})");
+        println!("{GREETING} from {PROJECT_NAME} - Phase 4a (hart {hartid})");
 
         trap::init();
         // Deliberate breakpoint: proves the handler catches an exception
@@ -35,7 +35,20 @@ mod bare {
         unsafe { core::arch::asm!("ebreak") };
         println!("survived breakpoint");
 
-        mem::init();
+        // Phase 4a: learn the machine from the device tree instead of
+        // hardcoding QEMU's. SAFETY: `dtb` is the firmware-provided FDT
+        // pointer; the MMU is still off, so the physical read is valid, and
+        // the frame allocator (armed inside mem::init below) has not yet
+        // touched the blob's memory.
+        let machine = unsafe { dt::from_ptr(dtb) };
+        println!(
+            "dt: {} MiB RAM @ {:#x}, timebase {} Hz",
+            machine.ram_size >> 20,
+            machine.ram_base,
+            machine.timebase_hz
+        );
+
+        mem::init(machine.ram_base + machine.ram_size);
         println!(
             "paging: sv39 on ({} of {} frames free)",
             mem::free_frames(),
@@ -76,6 +89,7 @@ mod bare {
 
         sched::spawn("idle", idle, core::ptr::addr_of!(KS_IDLE) as usize + TASK_STACK);
 
+        timer::init(machine.timebase_hz);
         timer::start();
         println!("(scheduler starting; heartbeat ~1/s; exit QEMU with Ctrl-A then X)");
         sched::enter()
