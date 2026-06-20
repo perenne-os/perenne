@@ -63,34 +63,34 @@ mod bare {
         frame_roundtrip();
         pqc_demo();
 
-        // Phase 3b-iii: two isolated U-mode components communicate ONLY
-        // through a capability-checked synchronous endpoint. Each task runs
-        // in its own address space (3b-ii). server/client are granted the
-        // endpoint capability at boot; rogue is not. Spawn order puts server
-        // in slot 0, so enter() runs it first — it recv's and blocks until
-        // the client sends. These tasks don't print, so they have no user
-        // data page (the (0, 0) data region maps nothing).
+        // First user-space component (ADR 0007): the RTC server owns the
+        // goldfish RTC — its MMIO is mapped R-U into THIS component only — and
+        // serves time-reads over a capability-checked endpoint; the kernel
+        // never touches the RTC. rtc_client holds the endpoint cap and asks;
+        // rogue does not and is refused. The server is slot 0, so enter() runs
+        // it first — it recv's and blocks before the client sends.
         use core::mem::size_of;
         let ustack = |base: usize| (base, base + size_of::<UStack>());
-        const NO_DATA: (usize, usize) = (0, 0);
+        const NO_DEVICE: (usize, usize) = (0, 0);
+        let rtc = (machine.rtc_base, machine.rtc_base + 0x1000); // one MMIO page
 
-        let su = ustack(core::ptr::addr_of!(US_SERVER) as usize);
-        let server = sched::spawn_user("server", server_task, su.1,
-            core::ptr::addr_of!(KS_SERVER) as usize + TASK_STACK,
-            mem::build_user_space(su, NO_DATA));
-        sched::grant_cap(server, EP_CAP, Capability::Endpoint(EP0));
+        let us = ustack(core::ptr::addr_of!(US_RTC) as usize);
+        let rtc_srv = sched::spawn_user("rtc", rtc_server, us.1,
+            core::ptr::addr_of!(KS_RTC) as usize + TASK_STACK,
+            mem::build_user_space(us, rtc)); // RTC MMIO mapped R-U into the server only
+        sched::grant_cap(rtc_srv, EP_CAP, Capability::Endpoint(EP0));
 
         let cu = ustack(core::ptr::addr_of!(US_CLIENT) as usize);
-        let client = sched::spawn_user("client", client_task, cu.1,
+        let client = sched::spawn_user("client", rtc_client, cu.1,
             core::ptr::addr_of!(KS_CLIENT) as usize + TASK_STACK,
-            mem::build_user_space(cu, NO_DATA));
+            mem::build_user_space(cu, NO_DEVICE));
         sched::grant_cap(client, EP_CAP, Capability::Endpoint(EP0));
 
-        // rogue gets NO endpoint capability — its send must be rejected.
+        // rogue gets NO endpoint capability — its send must be refused.
         let ru = ustack(core::ptr::addr_of!(US_ROGUE) as usize);
         let _rogue = sched::spawn_user("rogue", rogue_task, ru.1,
             core::ptr::addr_of!(KS_ROGUE) as usize + TASK_STACK,
-            mem::build_user_space(ru, NO_DATA));
+            mem::build_user_space(ru, NO_DEVICE));
 
         sched::spawn("idle", idle, core::ptr::addr_of!(KS_IDLE) as usize + TASK_STACK);
 
@@ -170,7 +170,7 @@ mod bare {
     /// traps land on). 16 KiB; per-task guard pages stay deferred.
     const TASK_STACK: usize = 16 * 1024;
     type KStack = [u8; TASK_STACK];
-    static mut KS_SERVER: KStack = [0; TASK_STACK];
+    static mut KS_RTC: KStack = [0; TASK_STACK];
     static mut KS_CLIENT: KStack = [0; TASK_STACK];
     static mut KS_ROGUE: KStack = [0; TASK_STACK];
     static mut KS_IDLE: KStack = [0; TASK_STACK];
@@ -182,7 +182,7 @@ mod bare {
     #[repr(C, align(4096))]
     struct UStack([u8; USER_STACK_SIZE]);
     #[link_section = ".user_data"]
-    static mut US_SERVER: UStack = UStack([0; USER_STACK_SIZE]);
+    static mut US_RTC: UStack = UStack([0; USER_STACK_SIZE]);
     #[link_section = ".user_data"]
     static mut US_CLIENT: UStack = UStack([0; USER_STACK_SIZE]);
     #[link_section = ".user_data"]
@@ -247,29 +247,55 @@ mod bare {
         badge
     }
 
-    /// The server component: receive one message on the endpoint (blocking
-    /// until the client sends), then exit with the received badge as its
-    /// code — proving the value arrived across the address-space boundary.
+    /// The RTC time server: a user-space driver that exclusively owns the
+    /// goldfish real-time clock — its MMIO is mapped R-U into THIS component
+    /// only (3b-ii isolation). It receives one request over its endpoint,
+    /// reads the clock, and reports the value as its exit code (the kernel
+    /// formats and prints it). The kernel never touches the RTC.
+    ///
+    /// Two U-mode codegen rules shape this: (1) the MMIO read uses inline asm,
+    /// not `core::ptr::read_volatile`, because in a debug build that `#[inline]`
+    /// core fn may NOT be inlined and would become a call into kernel `.text`,
+    /// which a U-mode task cannot fetch; (2) we report via the exit code rather
+    /// than formatting a string here, so there is no buffer/`.rodata`/builtin
+    /// hazard at all — the kernel does the formatting.
+    ///
+    /// The base 0x101000 is the goldfish-rtc MMIO the kernel discovered from
+    /// the device tree and mapped into our address space (passing the base to
+    /// the component is future work).
     #[no_mangle]
     #[link_section = ".user_text"]
-    extern "C" fn server_task() -> ! {
-        // SAFETY: recv blocks until a sender arrives; we hold the endpoint
-        // capability at EP_CAP. The badge is the value the client sent.
+    extern "C" fn rtc_server() -> ! {
+        // SAFETY: we hold the endpoint cap at EP_CAP; recv blocks for a request.
+        let _req = unsafe { sys_recv(EP_CAP) };
+        let low: u32;
+        let high: u32;
+        // SAFETY: the goldfish RTC page is mapped R-U in our address space;
+        // reading TIME_LOW (offset 0) latches TIME_HIGH (offset 4).
         unsafe {
-            let badge = sys_recv(EP_CAP);
-            sys_exit(badge)
+            core::arch::asm!(
+                "lw {lo}, 0({base})",
+                "lw {hi}, 4({base})",
+                base = in(reg) 0x10_1000usize,
+                lo = out(reg) low,
+                hi = out(reg) high,
+                options(nostack),
+            );
         }
+        let t = ((high as usize) << 32) | (low as usize);
+        // SAFETY: report the clock as our exit code; the kernel prints it. A
+        // large, non-zero nanosecond count proves we read live hardware.
+        unsafe { sys_exit(t) }
     }
 
-    /// The client component: send one message (badge 0x42) to the endpoint,
-    /// then exit cleanly. The server is waiting, so the send delivers and
-    /// wakes it without blocking.
+    /// A client of the RTC server: request the time once (badge 1 =
+    /// "report"), then exit. Holds the endpoint capability.
     #[no_mangle]
     #[link_section = ".user_text"]
-    extern "C" fn client_task() -> ! {
-        // SAFETY: we hold the endpoint capability at EP_CAP.
+    extern "C" fn rtc_client() -> ! {
+        // SAFETY: we hold the endpoint cap at EP_CAP.
         unsafe {
-            sys_send(EP_CAP, 0x42);
+            sys_send(EP_CAP, 1);
             sys_exit(0)
         }
     }

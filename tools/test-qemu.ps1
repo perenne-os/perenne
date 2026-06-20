@@ -57,7 +57,7 @@ $mustMatch = @(
     "wx: rodata write blocked",
     "frames: alloc/free ok",
     "ipc: 'rtc' blocks on recv",
-    "rtc: 0x[0-9a-f]{16}",
+    "sched: task 'rtc' exited \(code \d{15,}\)",
     "ipc: 'rogue' send rejected \(no capability\)",
     "pqc: ML-KEM-768 round-trip ok",
     "console: ns16550a @ 0x10000000",
