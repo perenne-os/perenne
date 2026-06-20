@@ -94,11 +94,13 @@ finale. Each sub-phase gets its own design → plan → build cycle.
 With 3b-iii done, **Phase 3b (capabilities & IPC) is complete**, and the
 Phase 3 security spine stands but for the PQC primitive (3c).
 
-### Phase 3c — PQC primitive
+### Phase 3c — PQC primitive  *(done — 2026-06-20)*
 
 - **Goal:** integrate an audited post-quantum crypto crate and expose one usable primitive (per ADR 0004).
-- **You learn:** integrating audited crypto into `no_std`, the `libs/crypto` crate.
-- **Done when:** a PQC primitive (e.g. ML-KEM keygen/encapsulation or ML-DSA verify) is usable and host-tested.
+- **You learn:** what a KEM is, integrating an external `no_std`/no-alloc crate into the bare kernel, and why the first real dependency means committing `Cargo.lock` (see [learning note 0010](../learning/0010-post-quantum-crypto.md)).
+- **Done when:** `./tools/test-qemu.ps1` observes an ML-KEM-768 round-trip succeed on the bare kernel, with the wrapper host-tested (round-trip agrees, distinct seeds differ, a tampered ciphertext does not).
+
+**Phase 3 (security spine) is complete:** U-mode (3a), the run queue + address-space isolation + capability-checked IPC (3b), and a post-quantum primitive (3c). Next is Phase 4 — real hardware.
 
 ## Phase 4 — Real hardware
 

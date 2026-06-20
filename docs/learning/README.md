@@ -19,3 +19,4 @@ This folder holds the author's learning notes as systems-programming concepts cl
 - [0007 — U-mode tasks in the run queue (Phase 3b-i)](0007-user-scheduling.md)
 - [0008 — Per-address-space isolation (Phase 3b-ii)](0008-address-space-isolation.md)
 - [0009 — Capabilities and synchronous IPC (Phase 3b-iii)](0009-capabilities-and-ipc.md)
+- [0010 — A post-quantum primitive: ML-KEM (Phase 3c)](0010-post-quantum-crypto.md)

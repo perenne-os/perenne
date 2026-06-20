@@ -10,6 +10,10 @@ Plain-language definitions of terms used throughout these docs. Aimed at someone
 - **Trusted Computing Base (TCB)** — all the code that must be correct for the system to be secure (essentially, everything privileged). Smaller is better.
 - **Capability** — an unforgeable token that names a resource *and* grants permission to use it. A component can do only what its capabilities allow.
 - **IPC (Inter-Process Communication)** — how isolated programs talk to each other, typically by passing messages. The microkernel's main job is to deliver these safely.
+- **Post-quantum cryptography (PQC)** — cryptography designed to resist an attacker with a large-scale quantum computer (which would break RSA/ECC). The project's baseline per ADR 0004; ordinary code on ordinary chips, no quantum hardware needed.
+- **KEM (key-encapsulation mechanism)** — a public-key scheme for establishing a shared secret: *encapsulate* to someone's public key yields a (ciphertext, secret) pair; the holder of the private key *decapsulates* the ciphertext to recover the same secret. The post-quantum replacement for classical key exchange.
+- **ML-KEM** — the NIST-standardized post-quantum KEM (FIPS 203, formerly "Kyber"). This kernel uses **ML-KEM-768** (NIST security level 3).
+- **Shared secret** — the symmetric key two parties derive via a KEM, used to key further (symmetric) encryption.
 - **HAL (Hardware Abstraction Layer)** — a uniform interface that hides hardware differences, so the kernel doesn't need to know which specific device or chip it's running on.
 - **ISA (Instruction Set Architecture)** — the "language" a CPU speaks (e.g. x86-64, ARM64, RISC-V). Code must be built for a specific ISA.
 - **RISC-V** — a modern, open, royalty-free ISA. Our first target because it's clean to learn and future-forward.
