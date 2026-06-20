@@ -76,6 +76,10 @@ Plain-language definitions of terms used throughout these docs. Aimed at someone
 - **Confused deputy** — a privileged component tricked into misusing its authority on behalf of a less-privileged caller; here, the kernel reading a kernel address supplied as a user `print` pointer — prevented by validating the pointer against the user's own memory.
 - **Task termination / containment** — ending a task cleanly (`exit`) or because it faulted (killed); a U-mode fault contains just the task, leaving the kernel running.
 - **U bit (PTE)** — the page-table entry flag that makes a page accessible to U-mode; kernel pages omit it, so a user touch faults.
+- **Capability table (CSpace)** — a task's private array of capabilities; a syscall names a kernel object by an *index* into this table, which is what makes the token unforgeable (you can only name what you were granted). In this kernel, `Task.caps`.
+- **Endpoint** — a synchronous IPC rendezvous point named by a capability; `send`/`recv` meet here. In Phase 3b-iii it is a symbolic id whose wait queue is the set of tasks blocked on it.
+- **Synchronous IPC / rendezvous** — message passing where sender and receiver must meet: whichever arrives first blocks until the other does, then the message transfers and both proceed.
+- **Blocking / wait queue** — a task that cannot proceed (e.g. `recv` with no sender) is parked in a non-runnable `Blocked` state and skipped by the scheduler until a peer wakes it; the "queue" is the set of tasks blocked on a given endpoint.
 - **`yield` syscall** — a U-mode task cooperatively gives up the CPU to the next ready task through the kernel (it cannot call the scheduler directly). Syscall number 3 in this kernel.
 - **task `Exited` state** — a terminated task slot the scheduler skips forever; its stacks are not yet reclaimed (reaping is deferred).
 - **`user_trampoline`** — the first-run entry that `sret`s a freshly spawned U-mode task into U-mode (sets `sscratch`/`sepc`/`sstatus`, switches to the user stack); the U-mode analogue of `task_trampoline`.
