@@ -18,7 +18,7 @@ mod bare {
     use core::panic::PanicInfo;
 
     use kernel::GREETING;
-    use kernel_arch_riscv64::{mem, println, sched, timer, trap};
+    use kernel_arch_riscv64::{cap::Capability, mem, println, sched, timer, trap};
     use kernel_common::PROJECT_NAME;
 
     /// Rust entry, called from the boot assembly with the arguments
@@ -26,7 +26,7 @@ mod bare {
     #[no_mangle]
     extern "C" fn kmain(hartid: usize, _dtb: usize) -> ! {
         println!();
-        println!("{GREETING} from {PROJECT_NAME} - Phase 3b-i (hart {hartid})");
+        println!("{GREETING} from {PROJECT_NAME} - Phase 3b-iii (hart {hartid})");
 
         trap::init();
         // Deliberate breakpoint: proves the handler catches an exception
@@ -44,42 +44,34 @@ mod bare {
         wx_probe();
         frame_roundtrip();
 
-        // Phase 3b-ii: each U-mode task runs in its OWN address space. We
-        // build a private page table per task (kernel cloned in, shared
-        // .user_text, plus only that task's stack + data page), then spawn
-        // it with that satp. ping/pong cooperate via yield and exit; hog is
-        // preempted; snoop follows a pointer (in its own page) into pong's
-        // data page — unmapped in snoop's space — and is contained. idle is
-        // a kernel task on the master satp. Built here on the master satp
-        // (new page-table frames come from free RAM, which only it maps).
+        // Phase 3b-iii: two isolated U-mode components communicate ONLY
+        // through a capability-checked synchronous endpoint. Each task runs
+        // in its own address space (3b-ii). server/client are granted the
+        // endpoint capability at boot; rogue is not. Spawn order puts server
+        // in slot 0, so enter() runs it first — it recv's and blocks until
+        // the client sends. These tasks don't print, so they have no user
+        // data page (the (0, 0) data region maps nothing).
         use core::mem::size_of;
-        let region = |base: usize, size: usize| (base, base + size);
+        let ustack = |base: usize| (base, base + size_of::<UStack>());
+        const NO_DATA: (usize, usize) = (0, 0);
 
-        let us_ping = region(core::ptr::addr_of!(US_PING) as usize, size_of::<UStack>());
-        let ud_ping = region(core::ptr::addr_of!(UD_PING) as usize, size_of::<UData>());
-        let ping_satp = mem::build_user_space(us_ping, ud_ping);
-        sched::spawn_user("ping", user_ping, us_ping.1,
-            core::ptr::addr_of!(KS_PING) as usize + TASK_STACK, ping_satp);
+        let su = ustack(core::ptr::addr_of!(US_SERVER) as usize);
+        let server = sched::spawn_user("server", server_task, su.1,
+            core::ptr::addr_of!(KS_SERVER) as usize + TASK_STACK,
+            mem::build_user_space(su, NO_DATA));
+        sched::grant_cap(server, EP_CAP, Capability::Endpoint(EP0));
 
-        let us_pong = region(core::ptr::addr_of!(US_PONG) as usize, size_of::<UStack>());
-        let ud_pong = region(core::ptr::addr_of!(UD_PONG) as usize, size_of::<UData>());
-        let pong_satp = mem::build_user_space(us_pong, ud_pong);
-        sched::spawn_user("pong", user_pong, us_pong.1,
-            core::ptr::addr_of!(KS_PONG) as usize + TASK_STACK, pong_satp);
+        let cu = ustack(core::ptr::addr_of!(US_CLIENT) as usize);
+        let client = sched::spawn_user("client", client_task, cu.1,
+            core::ptr::addr_of!(KS_CLIENT) as usize + TASK_STACK,
+            mem::build_user_space(cu, NO_DATA));
+        sched::grant_cap(client, EP_CAP, Capability::Endpoint(EP0));
 
-        let us_hog = region(core::ptr::addr_of!(US_HOG) as usize, size_of::<UStack>());
-        let ud_hog = region(core::ptr::addr_of!(UD_HOG) as usize, size_of::<UData>());
-        let hog_satp = mem::build_user_space(us_hog, ud_hog);
-        sched::spawn_user("hog", user_hog, us_hog.1,
-            core::ptr::addr_of!(KS_HOG) as usize + TASK_STACK, hog_satp);
-
-        // snoop's data page holds a pointer to pong's data page; snoop's
-        // tree maps SNOOP_TARGET but NOT pong's page, so following it faults.
-        let us_snoop = region(core::ptr::addr_of!(US_SNOOP) as usize, size_of::<UStack>());
-        let snoop_data = region(core::ptr::addr_of!(SNOOP_TARGET) as usize, size_of::<Snoop>());
-        let snoop_satp = mem::build_user_space(us_snoop, snoop_data);
-        sched::spawn_user("snoop", user_snoop, us_snoop.1,
-            core::ptr::addr_of!(KS_SNOOP) as usize + TASK_STACK, snoop_satp);
+        // rogue gets NO endpoint capability — its send must be rejected.
+        let ru = ustack(core::ptr::addr_of!(US_ROGUE) as usize);
+        let _rogue = sched::spawn_user("rogue", rogue_task, ru.1,
+            core::ptr::addr_of!(KS_ROGUE) as usize + TASK_STACK,
+            mem::build_user_space(ru, NO_DATA));
 
         sched::spawn("idle", idle, core::ptr::addr_of!(KS_IDLE) as usize + TASK_STACK);
 
@@ -137,91 +129,31 @@ mod bare {
         println!("frames: alloc/free ok");
     }
 
+    /// The demo endpoint id and the capability-table slot it is installed in.
+    const EP0: usize = 0;
+    const EP_CAP: usize = 0;
+
     /// Per-task kernel stack size (also the trap stack a U-mode task's
     /// traps land on). 16 KiB; per-task guard pages stay deferred.
     const TASK_STACK: usize = 16 * 1024;
     type KStack = [u8; TASK_STACK];
-
-    /// One kernel/trap stack per U-mode task, plus one for the idle task.
-    /// In .bss → mapped global by map_kernel_sections, so a task traps onto
-    /// its own kernel stack in its own address space.
-    static mut KS_PING: KStack = [0; TASK_STACK];
-    static mut KS_PONG: KStack = [0; TASK_STACK];
-    static mut KS_HOG: KStack = [0; TASK_STACK];
-    static mut KS_SNOOP: KStack = [0; TASK_STACK];
+    static mut KS_SERVER: KStack = [0; TASK_STACK];
+    static mut KS_CLIENT: KStack = [0; TASK_STACK];
+    static mut KS_ROGUE: KStack = [0; TASK_STACK];
     static mut KS_IDLE: KStack = [0; TASK_STACK];
 
-    /// A page-aligned U-mode stack (2 pages). Page alignment is required so
-    /// each task's stack occupies its OWN pages — the unit of isolation.
+    /// A page-aligned U-mode stack (2 pages), so each task's stack occupies
+    /// its own pages — the unit of isolation (3b-ii). These tasks pass the
+    /// whole IPC message in registers, so they need no user data page.
     const USER_STACK_SIZE: usize = 8 * 1024;
     #[repr(C, align(4096))]
     struct UStack([u8; USER_STACK_SIZE]);
     #[link_section = ".user_data"]
-    static mut US_PING: UStack = UStack([0; USER_STACK_SIZE]);
+    static mut US_SERVER: UStack = UStack([0; USER_STACK_SIZE]);
     #[link_section = ".user_data"]
-    static mut US_PONG: UStack = UStack([0; USER_STACK_SIZE]);
+    static mut US_CLIENT: UStack = UStack([0; USER_STACK_SIZE]);
     #[link_section = ".user_data"]
-    static mut US_HOG: UStack = UStack([0; USER_STACK_SIZE]);
-    #[link_section = ".user_data"]
-    static mut US_SNOOP: UStack = UStack([0; USER_STACK_SIZE]);
-
-    /// A page-aligned 4 KiB U-mode data page. Each task gets its own so its
-    /// data is page-isolated from every other task. The message bytes sit
-    /// at the start; the rest is zero.
-    #[repr(C, align(4096))]
-    struct UData([u8; 4096]);
-
-    /// Fill a 4 KiB page with `prefix` at the front, zero after (const so
-    /// the page is a link-time constant in .user_data, not a runtime write).
-    const fn page_with(prefix: &[u8]) -> [u8; 4096] {
-        let mut p = [0u8; 4096];
-        let mut i = 0;
-        while i < prefix.len() {
-            p[i] = prefix[i];
-            i += 1;
-        }
-        p
-    }
-
-    #[link_section = ".user_data"]
-    static UD_PING: UData = UData(page_with(b"user: ping\n"));
-    #[link_section = ".user_data"]
-    static UD_PONG: UData = UData(page_with(b"user: pong\n"));
-    #[link_section = ".user_data"]
-    static UD_HOG: UData = UData(page_with(b"user: hog\n"));
-
-    /// Length of each task's message (bytes to print): "user: ping\n" and
-    /// "user: pong\n" are 11; "user: hog\n" is 10.
-    const PING_LEN: usize = 11;
-    const PONG_LEN: usize = 11;
-    const HOG_LEN: usize = 10;
-
-    /// A page-aligned page holding a pointer into pong's data page. Mapped
-    /// into snoop's address space (R-U); pong's page is NOT — so snoop can
-    /// load the pointer from its own page but faults when it dereferences.
-    #[repr(C, align(4096))]
-    struct Snoop(&'static u8);
-    #[link_section = ".user_data"]
-    static SNOOP_TARGET: Snoop = Snoop(&UD_PONG.0[0]);
-
-    /// Print syscall (a7 = 1): a0 = ptr, a1 = len. `inline(always)` so it
-    /// folds into the user entry and the `.user_text` page stays
-    /// self-contained (no call into kernel `.text`). a0 is in/out: the
-    /// kernel returns the byte count there, which we discard.
-    ///
-    /// # Safety
-    /// `ptr`/`len` must describe the buffer the kernel should print; the
-    /// kernel validates the range before reading it.
-    #[inline(always)]
-    unsafe fn sys_print(ptr: *const u8, len: usize) {
-        core::arch::asm!(
-            "ecall",
-            in("a7") 1usize,
-            inout("a0") ptr => _,
-            in("a1") len,
-            options(nostack),
-        );
-    }
+    static mut US_ROGUE: UStack = UStack([0; USER_STACK_SIZE]);
 
     /// Exit syscall (a7 = 2): a0 = code. Never returns.
     ///
@@ -237,83 +169,89 @@ mod bare {
         );
     }
 
-    /// Yield syscall (a7 = 3): give up the CPU; returns when rescheduled.
+    /// send syscall (a7 = 4): a0 = cap index, a1 = badge, a2..a4 = data
+    /// (zero here). Returns a0: 0 on success, or `usize::MAX` if the caller
+    /// lacks the capability.
     ///
     /// # Safety
-    /// Always sound; the kernel reschedules and resumes this task later.
+    /// Always sound; the kernel validates the capability and may block this
+    /// task until a receiver arrives.
     #[inline(always)]
-    unsafe fn sys_yield() {
-        core::arch::asm!("ecall", in("a7") 3usize, options(nostack));
+    unsafe fn sys_send(cap: usize, badge: usize) -> usize {
+        let ret;
+        core::arch::asm!(
+            "ecall",
+            in("a7") 4usize,
+            inout("a0") cap => ret,
+            in("a1") badge,
+            in("a2") 0usize,
+            in("a3") 0usize,
+            in("a4") 0usize,
+            options(nostack),
+        );
+        ret
     }
 
-    /// Cooperating U-mode task: print its own data page twice, yielding to
-    /// its peer between each, then exit cleanly. In its own address space.
-    #[no_mangle]
-    #[link_section = ".user_text"]
-    extern "C" fn user_ping() -> ! {
-        // SAFETY: UD_PING is mapped R-U in this task's space; the kernel
-        // validates the pointer (it lies in .user_data) and reads it.
-        unsafe {
-            sys_print(core::ptr::addr_of!(UD_PING) as *const u8, PING_LEN);
-            sys_yield();
-            sys_print(core::ptr::addr_of!(UD_PING) as *const u8, PING_LEN);
-            sys_yield();
-            sys_exit(0)
-        }
-    }
-
-    /// Peer of `user_ping`: same protocol — the two interleave to prove
-    /// round-robin, now each in its own address space.
-    #[no_mangle]
-    #[link_section = ".user_text"]
-    extern "C" fn user_pong() -> ! {
-        // SAFETY: see `user_ping`.
-        unsafe {
-            sys_print(core::ptr::addr_of!(UD_PONG) as *const u8, PONG_LEN);
-            sys_yield();
-            sys_print(core::ptr::addr_of!(UD_PONG) as *const u8, PONG_LEN);
-            sys_yield();
-            sys_exit(0)
-        }
-    }
-
-    /// The hog: two cooperative rounds, then spin forever without yielding.
-    /// The timer preempts it (proving a U-mode task is preemptible, now
-    /// across an address-space switch).
-    #[no_mangle]
-    #[link_section = ".user_text"]
-    extern "C" fn user_hog() -> ! {
-        // SAFETY: see `user_ping`.
-        unsafe {
-            sys_print(core::ptr::addr_of!(UD_HOG) as *const u8, HOG_LEN);
-            sys_yield();
-            sys_print(core::ptr::addr_of!(UD_HOG) as *const u8, HOG_LEN);
-            sys_yield();
-        }
-        loop {
-            core::hint::spin_loop();
-        }
-    }
-
-    /// The cross-task snooper: follow a pointer (kept in our OWN mapped page)
-    /// into another task's data page. That page is not mapped in our address
-    /// space, so the load faults in U-mode and the kernel contains us while
-    /// the others keep running — the isolation proof.
+    /// recv syscall (a7 = 5): a0 = cap index. Returns the badge in a0 (the
+    /// data words come back in a1..a3, unused here). Blocks until a sender
+    /// arrives.
     ///
-    /// `lb` is inline asm (not `read_volatile`, which a debug build may turn
-    /// into a `jalr` into kernel text → the wrong fault). It faults in U-mode
-    /// before retiring; control never returns here.
+    /// # Safety
+    /// Always sound; the kernel validates the capability and may block this
+    /// task until a sender arrives.
+    #[inline(always)]
+    unsafe fn sys_recv(cap: usize) -> usize {
+        let badge;
+        core::arch::asm!(
+            "ecall",
+            in("a7") 5usize,
+            inout("a0") cap => badge,
+            out("a1") _,
+            out("a2") _,
+            out("a3") _,
+            options(nostack),
+        );
+        badge
+    }
+
+    /// The server component: receive one message on the endpoint (blocking
+    /// until the client sends), then exit with the received badge as its
+    /// code — proving the value arrived across the address-space boundary.
     #[no_mangle]
     #[link_section = ".user_text"]
-    extern "C" fn user_snoop() -> ! {
-        let target: *const u8 = SNOOP_TARGET.0;
-        let _v: u8;
-        // SAFETY: deliberate cross-task isolation probe; the lb faults in
-        // U-mode (the target page is unmapped in our space) before it
-        // completes, so control never returns.
+    extern "C" fn server_task() -> ! {
+        // SAFETY: recv blocks until a sender arrives; we hold the endpoint
+        // capability at EP_CAP. The badge is the value the client sent.
         unsafe {
-            core::arch::asm!("lb {v}, 0({p})", v = out(reg) _v, p = in(reg) target, options(nostack));
-            sys_exit(0) // unreachable: the load above faults first
+            let badge = sys_recv(EP_CAP);
+            sys_exit(badge)
+        }
+    }
+
+    /// The client component: send one message (badge 0x42) to the endpoint,
+    /// then exit cleanly. The server is waiting, so the send delivers and
+    /// wakes it without blocking.
+    #[no_mangle]
+    #[link_section = ".user_text"]
+    extern "C" fn client_task() -> ! {
+        // SAFETY: we hold the endpoint capability at EP_CAP.
+        unsafe {
+            sys_send(EP_CAP, 0x42);
+            sys_exit(0)
+        }
+    }
+
+    /// The rogue: it was granted NO endpoint capability, so its send is
+    /// rejected (returns usize::MAX). It exits 7 to prove the capability
+    /// check enforced — it could not reach the endpoint server/client share.
+    #[no_mangle]
+    #[link_section = ".user_text"]
+    extern "C" fn rogue_task() -> ! {
+        // SAFETY: send is always sound; here it returns an error because we
+        // hold no capability at EP_CAP.
+        unsafe {
+            let r = sys_send(EP_CAP, 0xdead);
+            sys_exit(if r == usize::MAX { 7 } else { 0 })
         }
     }
 
