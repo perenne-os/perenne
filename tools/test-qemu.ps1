@@ -6,7 +6,9 @@
 # U-mode components communicate only through capability-checked synchronous
 # IPC (the server blocks on recv; the client sends a value the server
 # receives across address spaces and exits with), and a rogue task lacking
-# the endpoint capability is rejected.
+# the endpoint capability is rejected — and the Phase 3c milestone: an
+# ML-KEM-768 post-quantum key-encapsulation round-trip runs on the bare
+# kernel (shared secret agreed).
 # (Earlier scheduling/isolation proofs are subsumed by this IPC demo, which
 # still runs each task in its own address space.)
 # Usage: ./tools/test-qemu.ps1     (exit code 0 = pass, 1 = fail)
@@ -51,6 +53,7 @@ $mustMatch = @(
     "sched: task 'server' exited \(code 66\)",
     "sched: task 'rogue' exited \(code 7\)",
     "sched: task 'client' exited \(code 0\)",
+    "pqc: ML-KEM-768 round-trip ok",
     "tick: 2(?!\d)"
 )
 $missing = $mustMatch
@@ -68,7 +71,7 @@ finally {
 }
 
 if ($missing.Count -eq 0) {
-    Write-Host "BOOT TEST PASS: 2a + 2b milestones plus the Phase 3b-iii milestone — two isolated U-mode components communicate only through capability-checked synchronous IPC (server blocks on recv; the client's value crosses address spaces and the server exits with it), and a rogue lacking the endpoint capability is rejected." -ForegroundColor Green
+    Write-Host "BOOT TEST PASS: 2a + 2b + the Phase 3b-iii IPC milestone (capability-checked synchronous IPC; rogue rejected) and the Phase 3c milestone (an ML-KEM-768 post-quantum round-trip runs on the bare kernel)." -ForegroundColor Green
     exit 0
 } else {
     Write-Host "BOOT TEST FAIL: missing within 30s: $($missing -join ', '). Serial output:" -ForegroundColor Red

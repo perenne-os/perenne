@@ -43,6 +43,7 @@ mod bare {
         );
         wx_probe();
         frame_roundtrip();
+        pqc_demo();
 
         // Phase 3b-iii: two isolated U-mode components communicate ONLY
         // through a capability-checked synchronous endpoint. Each task runs
@@ -127,6 +128,19 @@ mod bare {
         }
         mem::frame::free(second);
         println!("frames: alloc/free ok");
+    }
+
+    /// Phase 3c: prove the post-quantum KEM runs on the bare kernel — an
+    /// ML-KEM-768 round-trip whose two shared secrets must agree. The seed
+    /// is FIXED and NOT secret (real entropy seeding is deferred); this
+    /// proves the algorithm runs no_std/no-alloc on the kernel, not that it
+    /// is securely keyed.
+    fn pqc_demo() {
+        const PQC_DEMO_SEED: [u8; 32] = [0x3c; 32];
+        match kernel_crypto::ml_kem768_agree(PQC_DEMO_SEED) {
+            Some(_) => println!("pqc: ML-KEM-768 round-trip ok (shared secret agreed)"),
+            None => println!("pqc: ML-KEM-768 FAIL (secrets disagreed)"),
+        }
     }
 
     /// The demo endpoint id and the capability-table slot it is installed in.
