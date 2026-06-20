@@ -55,10 +55,13 @@ SECTIONS
      * .bss (2a's documented limitation). */
     . += 4K;
 
-    /* Boot stack for the single hart we run. */
+    /* Boot stack for the single hart we run. 512 KiB: a debug-build
+     * ML-KEM-768 round-trip (Phase 3c, no inlining) needs well over the
+     * earlier 64 KiB. NOLOAD, so this only reserves address space + mapped
+     * frames, not binary size. */
     .stack (NOLOAD) : {
         __stack_start = .;
-        . += 64K;
+        . += 512K;
         __stack_top = .;
     }
 

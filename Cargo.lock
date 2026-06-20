@@ -103,6 +103,7 @@ version = "0.0.0"
 dependencies = [
  "kernel-arch-riscv64",
  "kernel-common",
+ "kernel-crypto",
 ]
 
 [[package]]
