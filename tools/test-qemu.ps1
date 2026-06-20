@@ -10,7 +10,9 @@
 # ML-KEM-768 post-quantum key-encapsulation round-trip runs on the bare
 # kernel (shared secret agreed) — and the Phase 4a milestone: the kernel
 # discovers RAM (192 MiB, proving it read the device tree, not a hardcoded
-# 128) and the timer frequency from the device tree.
+# 128) and the timer frequency from the device tree — and the Phase 4b
+# milestone: a direct ns16550 UART driver (discovered from the device tree)
+# carries all console output, replacing the SBI firmware console.
 # (Earlier scheduling/isolation proofs are subsumed by this IPC demo, which
 # still runs each task in its own address space.)
 # Usage: ./tools/test-qemu.ps1     (exit code 0 = pass, 1 = fail)
@@ -56,6 +58,7 @@ $mustMatch = @(
     "sched: task 'rogue' exited \(code 7\)",
     "sched: task 'client' exited \(code 0\)",
     "pqc: ML-KEM-768 round-trip ok",
+    "console: ns16550a @ 0x10000000",
     "dt: 192 MiB RAM",
     "tick: 2(?!\d)"
 )
@@ -74,7 +77,7 @@ finally {
 }
 
 if ($missing.Count -eq 0) {
-    Write-Host "BOOT TEST PASS: 2a + 2b + the Phase 3b-iii IPC milestone, the Phase 3c ML-KEM round-trip, and the Phase 4a milestone (the kernel discovers 192 MiB RAM + the timebase from the device tree)." -ForegroundColor Green
+    Write-Host "BOOT TEST PASS: 2a + 2b + Phase 3b-iii IPC + Phase 3c ML-KEM + Phase 4a device-tree discovery (192 MiB) + Phase 4b (a direct ns16550 UART driver carries all console output)." -ForegroundColor Green
     exit 0
 } else {
     Write-Host "BOOT TEST FAIL: missing within 30s: $($missing -join ', '). Serial output:" -ForegroundColor Red
