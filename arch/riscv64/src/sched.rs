@@ -825,6 +825,41 @@ pub fn restart(frame: &mut crate::trap::TrapFrame) {
     frame.regs[9] = if ok { 0 } else { usize::MAX };
 }
 
+/// Service a `getrandom` syscall: if the caller holds a `Randomness`
+/// capability at index `a0` (= `frame.regs[9]`), fill `a1..a4` with 32 fresh
+/// bytes from the kernel entropy pool and set `a0 = 0`; otherwise set `a0 =
+/// usize::MAX` and return no bytes. Every outcome is logged with the caller's
+/// name.
+#[cfg(target_arch = "riscv64")]
+pub fn getrandom(frame: &mut crate::trap::TrapFrame) {
+    let cap_idx = frame.regs[9];
+    let ok = SCHED.with(|s| {
+        let t = s.tasks[s.current].as_ref().unwrap();
+        if crate::cap::has_randomness(&t.caps, cap_idx) {
+            crate::println!("rng: served 32 bytes to '{}'", t.name);
+            true
+        } else {
+            crate::println!("rng: request rejected (no capability)");
+            false
+        }
+    });
+    if !ok {
+        frame.regs[9] = usize::MAX;
+        return;
+    }
+    let bytes = crate::entropy::next_seed();
+    let word = |i: usize| {
+        let mut c = [0u8; 8];
+        c.copy_from_slice(&bytes[i..i + 8]);
+        u64::from_le_bytes(c) as usize
+    };
+    frame.regs[9] = 0; // a0 = ok
+    frame.regs[10] = word(0); // a1
+    frame.regs[11] = word(8); // a2
+    frame.regs[12] = word(16); // a3
+    frame.regs[13] = word(24); // a4
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
