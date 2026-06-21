@@ -178,6 +178,7 @@ pub fn spawn(name: &'static str, entry: extern "C" fn() -> !, stack_top: usize) 
             relaunch: None,
             restarts: 0,
             crash_badge: 0,
+            caller: None,
         });
         slot
     })
@@ -384,6 +385,7 @@ pub fn spawn_user(
             relaunch: Some(Relaunch { entry: entry as *const () as usize, user_sp }),
             restarts: 0,
             crash_badge: 0,
+            caller: None,
         });
         slot
     })
@@ -728,6 +730,7 @@ mod tests {
             relaunch: None,
             restarts: 0,
             crash_badge: 0,
+            caller: None,
         }
     }
 

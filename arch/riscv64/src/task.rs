@@ -50,6 +50,10 @@ pub enum TaskState {
     /// Waiting at an IPC rendezvous on `endpoint` as a sender or receiver.
     /// Non-`Ready`, so `pick_next` skips it until a peer wakes it.
     Blocked { endpoint: crate::cap::EndpointId, role: IpcRole },
+    /// A caller whose request a server has picked up, now blocked until that
+    /// server `reply`s. On no endpoint queue (so no second server can re-match
+    /// it); `pick_next` skips it. (Phase: call/reply IPC.)
+    AwaitingReply,
 }
 
 /// Number of capability slots in each task's table (its CSpace).
@@ -90,6 +94,9 @@ pub fn can_restart(restarts: usize, bound: usize) -> bool {
 pub enum IpcRole {
     Send,
     Recv,
+    /// A caller queued at an endpoint waiting for a server to pick up its
+    /// request (a server's `recv` matches `Send` or `Call`).
+    Call,
 }
 
 /// Why a U-mode task stopped running. Passed to `sched::exit_current` by the
@@ -163,6 +170,10 @@ pub struct Task {
     /// the healer's own cap-table index of this task's Restart capability,
     /// so the healer can act without a slot→cap mapping. 0 if not a patient.
     pub crash_badge: usize,
+    /// When this task is a server currently handling a `call`, the scheduler
+    /// slot of the caller it must `reply` to (set on receiving a Call, cleared
+    /// by `reply`). `None` otherwise. (Phase: call/reply IPC.)
+    pub caller: Option<usize>,
 }
 
 #[cfg(test)]
