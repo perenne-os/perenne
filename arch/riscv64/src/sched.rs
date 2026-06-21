@@ -507,20 +507,18 @@ fn find_blocked(s: &Scheduler, ep: EndpointId, role: IpcRole) -> Option<usize> {
         .position(|slot| slot.as_ref().is_some_and(|t| t.state == want))
 }
 
-/// Block the current task at an IPC rendezvous and switch to the next
-/// runnable task. The caller has NOT yet changed the task's state; this
-/// marks it `Blocked { endpoint, role }`, switches away, and returns only
-/// when a peer wakes it (sets it `Ready`). Called from the trap handler
-/// with interrupts off (like `exit_current`). The always-`Ready` idle task
-/// guarantees a successor exists.
+/// Park the current task in `state` and switch to the next runnable task.
+/// The caller has NOT yet changed the task's state; this sets it to `state`,
+/// switches away, and returns only when something wakes it (sets it `Ready`).
+/// Called from the trap handler with interrupts off (like `exit_current`).
+/// The always-`Ready` idle task guarantees a successor exists.
 #[cfg(target_arch = "riscv64")]
-fn block_current(endpoint: EndpointId, role: IpcRole) {
+fn park_current(state: TaskState) {
     let switch = SCHED.with(|s| {
         let current = s.current;
-        s.tasks[current].as_mut().unwrap().state =
-            TaskState::Blocked { endpoint, role };
+        s.tasks[current].as_mut().unwrap().state = state;
         let next = s.pick_next();
-        assert_ne!(next, current, "block_current: no runnable successor (idle must be Ready)");
+        assert_ne!(next, current, "park_current: no runnable successor (idle must be Ready)");
         s.tasks[next].as_mut().unwrap().state = TaskState::Running;
         s.current = next;
         let old = core::ptr::addr_of_mut!(s.tasks[current].as_mut().unwrap().context);
@@ -537,6 +535,12 @@ fn block_current(endpoint: EndpointId, role: IpcRole) {
     }
 }
 
+/// Block the current task at an IPC rendezvous (`Blocked{endpoint, role}`).
+#[cfg(target_arch = "riscv64")]
+fn block_current(endpoint: EndpointId, role: IpcRole) {
+    park_current(TaskState::Blocked { endpoint, role });
+}
+
 /// Service a `recv` syscall. `a0` (= `frame.regs[9]`) is the capability
 /// index of the endpoint. If a sender is already waiting, take its message
 /// and wake it; otherwise block until one arrives. On return the message
@@ -551,10 +555,20 @@ pub fn ipc_recv(frame: &mut crate::trap::TrapFrame) {
             Some(ep) => ep,
             None => return RecvStep::BadCap,
         };
-        match find_blocked(s, ep, IpcRole::Send) {
-            Some(si) => {
+        // A waiting one-way Send, or a Call (which expects a reply).
+        let waiting = find_blocked(s, ep, IpcRole::Send)
+            .map(|si| (si, false))
+            .or_else(|| find_blocked(s, ep, IpcRole::Call).map(|si| (si, true)));
+        match waiting {
+            Some((si, is_call)) => {
                 let msg = s.tasks[si].as_ref().unwrap().message;
-                s.tasks[si].as_mut().unwrap().state = TaskState::Ready;
+                if is_call {
+                    // Bind us (the server) to this caller; it now awaits our reply.
+                    s.tasks[cur].as_mut().unwrap().caller = Some(si);
+                    s.tasks[si].as_mut().unwrap().state = TaskState::AwaitingReply;
+                } else {
+                    s.tasks[si].as_mut().unwrap().state = TaskState::Ready;
+                }
                 RecvStep::Got(msg)
             }
             None => {
@@ -658,6 +672,103 @@ pub fn ipc_send(frame: &mut crate::trap::TrapFrame) {
             frame.regs[9] = 0; // a receiver took our message and woke us
         }
     }
+}
+
+/// The result of inspecting the rendezvous for a `call`.
+#[cfg(target_arch = "riscv64")]
+enum CallStep {
+    BadCap,
+    AwaitReply,
+    Queue(EndpointId),
+}
+
+/// Service a `call` syscall: atomically send the request (`a1`=badge,
+/// `a2..a4`=data) to the endpoint named by `a0`, then block for the reply.
+/// On return the reply `Message` is in the ABI registers (a0=badge,
+/// a1..a3=data), or `a0 = usize::MAX` if the capability check failed.
+#[cfg(target_arch = "riscv64")]
+pub fn ipc_call(frame: &mut crate::trap::TrapFrame) {
+    let cap_idx = frame.regs[9];
+    let msg = Message {
+        badge: frame.regs[10],
+        data: [frame.regs[11], frame.regs[12], frame.regs[13]],
+    };
+    let step = SCHED.with(|s| {
+        let cur = s.current;
+        let ep = match cap_lookup(&s.tasks[cur].as_ref().unwrap().caps, cap_idx) {
+            Some(ep) => ep,
+            None => {
+                crate::println!(
+                    "ipc: '{}' call rejected (no capability)",
+                    s.tasks[cur].as_ref().unwrap().name
+                );
+                return CallStep::BadCap;
+            }
+        };
+        match find_blocked(s, ep, IpcRole::Recv) {
+            Some(ri) => {
+                crate::println!(
+                    "ipc: '{}' calls '{}' badge {:#x}",
+                    s.tasks[cur].as_ref().unwrap().name,
+                    s.tasks[ri].as_ref().unwrap().name,
+                    msg.badge
+                );
+                s.tasks[ri].as_mut().unwrap().message = msg;
+                s.tasks[ri].as_mut().unwrap().caller = Some(cur);
+                s.tasks[ri].as_mut().unwrap().state = TaskState::Ready;
+                CallStep::AwaitReply
+            }
+            None => {
+                // No server yet: queue our request; a server's recv will pick
+                // it up, bind us as its caller, and move us to AwaitingReply.
+                s.tasks[cur].as_mut().unwrap().message = msg;
+                CallStep::Queue(ep)
+            }
+        }
+    });
+    match step {
+        CallStep::BadCap => frame.regs[9] = usize::MAX,
+        CallStep::AwaitReply => {
+            park_current(TaskState::AwaitingReply);
+            let reply = SCHED.with(|s| s.tasks[s.current].as_ref().unwrap().message);
+            write_message(frame, reply);
+        }
+        CallStep::Queue(ep) => {
+            block_current(ep, IpcRole::Call);
+            let reply = SCHED.with(|s| s.tasks[s.current].as_ref().unwrap().message);
+            write_message(frame, reply);
+        }
+    }
+}
+
+/// Service a `reply` syscall: answer the caller the kernel recorded when this
+/// server received a Call. `a0`=badge, `a1..a3`=data. `a0` becomes `0` on
+/// success, or `usize::MAX` if there is no pending caller (or it has exited).
+#[cfg(target_arch = "riscv64")]
+pub fn ipc_reply(frame: &mut crate::trap::TrapFrame) {
+    let msg = Message {
+        badge: frame.regs[9],
+        data: [frame.regs[10], frame.regs[11], frame.regs[12]],
+    };
+    let ok = SCHED.with(|s| {
+        let cur = s.current;
+        let caller = match s.tasks[cur].as_mut().unwrap().caller.take() {
+            Some(c) => c,
+            None => return false,
+        };
+        let awaiting = matches!(
+            s.tasks[caller].as_ref(),
+            Some(t) if t.state == TaskState::AwaitingReply
+        );
+        if awaiting {
+            s.tasks[caller].as_mut().unwrap().message = msg;
+            s.tasks[caller].as_mut().unwrap().state = TaskState::Ready;
+            true
+        } else {
+            false
+        }
+    });
+    frame.regs[9] = if ok { 0 } else { usize::MAX };
 }
 
 /// Service a `restart` syscall (Phase 5b — the caged fix). `a0`
