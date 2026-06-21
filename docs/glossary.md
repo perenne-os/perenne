@@ -17,6 +17,7 @@ Plain-language definitions of terms used throughout these docs. Aimed at someone
 - **Shared secret** — the symmetric key two parties derive via a KEM, used to key further (symmetric) encryption.
 - **CSPRNG / DRBG** — a cryptographically secure pseudo-random generator: from a small random *seed* it produces an unbounded stream that is computationally indistinguishable from random. The kernel's entropy pool is a CSPRNG built on the ChaCha20 stream cipher.
 - **Entropy pool** — the kernel's randomness source: a CSPRNG seeded by a hardware entropy device (here the virtio-rng component) that serves randomness on demand and is periodically *reseeded* with fresh device entropy (mixed into, not replacing, its state).
+- **getrandom** — the syscall a U-mode component uses to draw bytes from the kernel entropy pool. Capability-gated (the caller must hold a `Randomness` capability) — a kernel-owned generator is exposed as a syscall because the CSPRNG can't run unprivileged.
 - **HAL (Hardware Abstraction Layer)** — a uniform interface that hides hardware differences, so the kernel doesn't need to know which specific device or chip it's running on.
 - **ISA (Instruction Set Architecture)** — the "language" a CPU speaks (e.g. x86-64, ARM64, RISC-V). Code must be built for a specific ISA.
 - **RISC-V** — a modern, open, royalty-free ISA. Our first target because it's clean to learn and future-forward.

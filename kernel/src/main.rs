@@ -18,7 +18,7 @@ mod bare {
     use core::panic::PanicInfo;
 
     use kernel::GREETING;
-    use kernel_arch_riscv64::{cap::Capability, console, dt, mem, println, sched, task::Message, timer, trap, virtio};
+    use kernel_arch_riscv64::{cap::Capability, console, dt, entropy, mem, println, sched, task::Message, timer, trap, virtio};
     use kernel_common::PROJECT_NAME;
 
     /// Rust entry, called from the boot assembly with the arguments
@@ -142,6 +142,16 @@ mod bare {
             println!("entropy: no virtio-rng device found");
         }
 
+        // A U-mode component that draws from the entropy pool via the
+        // capability-gated getrandom syscall (it runs after pqc has seeded the
+        // pool). It holds a Randomness capability; a request without one is
+        // refused.
+        let nu = ustack(core::ptr::addr_of!(US_RNGUSER) as usize);
+        let rnguser = sched::spawn_user("rnguser", rnguser_task, nu.1,
+            core::ptr::addr_of!(KS_RNGUSER) as usize + TASK_STACK,
+            mem::build_user_space(nu, NO_DEVICE));
+        sched::grant_cap(rnguser, RNG_CAP, Capability::Randomness);
+
         sched::spawn("idle", idle, core::ptr::addr_of!(KS_IDLE) as usize + TASK_STACK);
 
         timer::init(machine.timebase_hz);
@@ -213,6 +223,9 @@ mod bare {
     const ENTROPY_EP: usize = 2;
     const ENTROPY_CAP: usize = 0;
 
+    /// The `rnguser` component's cap slot holding its `Randomness` capability.
+    const RNG_CAP: usize = 0;
+
     /// Per-task kernel stack size (also the trap stack a U-mode task's
     /// traps land on). 16 KiB; per-task guard pages stay deferred.
     const TASK_STACK: usize = 16 * 1024;
@@ -224,6 +237,7 @@ mod bare {
     static mut KS_TRANSIENT: KStack = [0; TASK_STACK];
     static mut KS_FLAKY: KStack = [0; TASK_STACK];
     static mut KS_ENTROPY: KStack = [0; TASK_STACK];
+    static mut KS_RNGUSER: KStack = [0; TASK_STACK];
     static mut KS_IDLE: KStack = [0; TASK_STACK];
 
     /// The PQC consumer runs ML-KEM-768, which in a debug build needs a much
@@ -252,6 +266,8 @@ mod bare {
     static mut US_FLAKY: UStack = UStack([0; USER_STACK_SIZE]);
     #[link_section = ".user_data"]
     static mut US_ENTROPY: UStack = UStack([0; USER_STACK_SIZE]);
+    #[link_section = ".user_data"]
+    static mut US_RNGUSER: UStack = UStack([0; USER_STACK_SIZE]);
 
     /// Exit syscall (a7 = 2): a0 = code. Never returns.
     ///
@@ -332,6 +348,32 @@ mod bare {
             options(nostack),
         );
         ret
+    }
+
+    /// getrandom syscall (a7 = 9): a0 = cap index of a Randomness capability.
+    /// Returns (status, 4 words): status a0 = 0 on success (the 4 words are 32
+    /// random bytes) or `usize::MAX` if the caller lacks the capability.
+    ///
+    /// # Safety
+    /// Always sound; the kernel validates the capability and fills the words.
+    #[inline(always)]
+    unsafe fn sys_getrandom(cap: usize) -> (usize, [usize; 4]) {
+        let status;
+        let w0;
+        let w1;
+        let w2;
+        let w3;
+        core::arch::asm!(
+            "ecall",
+            in("a7") 9usize,
+            inout("a0") cap => status,
+            out("a1") w0,
+            out("a2") w1,
+            out("a3") w2,
+            out("a4") w3,
+            options(nostack),
+        );
+        (status, [w0, w1, w2, w3])
     }
 
     /// recv syscall (a7 = 5): a0 = cap index. Returns the badge in a0 (the
@@ -611,21 +653,25 @@ mod bare {
         }
     }
 
-    /// The kernel entropy pool: a ChaCha20 CSPRNG seeded by the virtio-rng
-    /// component, serving entropy to kernel code on demand (reseedable). The
-    /// same single-hart cell primitive the scheduler/frame allocator use.
-    static ENTROPY_POOL: mem::SingleHartCell<kernel_crypto::EntropyPool> =
-        mem::SingleHartCell::new(kernel_crypto::EntropyPool::new());
-
-    /// Fold 32 bytes of device entropy into the pool (seeds on first call,
-    /// mixes after).
-    fn pool_reseed(bytes: [u8; 32]) {
-        ENTROPY_POOL.with(|p| p.reseed(bytes));
-    }
-
-    /// Draw a fresh 32-byte seed from the pool (the kernel seeds it first).
-    fn pool_next_seed() -> [u8; 32] {
-        ENTROPY_POOL.with(|p| p.next_seed())
+    /// A U-mode component that draws from the kernel entropy pool via the
+    /// capability-gated `getrandom` syscall. It proves both gating outcomes:
+    /// a request with no capability (cap slot 99) is refused, and requests with
+    /// its granted `Randomness` capability are served. It exits 0 iff the
+    /// refusal and the two served draws behaved as expected. (The pool's
+    /// liveness — distinct draws — is proven separately by the `pqc` demo; we
+    /// don't re-check it here, to avoid coupling to scheduler ordering.)
+    /// Register-only (no `.rodata`/buffer) — codegen-safe in U-mode.
+    #[no_mangle]
+    #[link_section = ".user_text"]
+    extern "C" fn rnguser_task() -> ! {
+        // SAFETY: getrandom is always sound; the kernel checks the capability.
+        unsafe {
+            let (bad, _) = sys_getrandom(99); // no capability at slot 99 -> refused
+            let (ok1, _) = sys_getrandom(RNG_CAP); // served
+            let (ok2, _) = sys_getrandom(RNG_CAP); // served again
+            let good = bad == usize::MAX && ok1 == 0 && ok2 == 0;
+            sys_exit(if good { 0 } else { 7 })
+        }
     }
 
     /// Rebuild a 32-byte ML-KEM seed from an IPC message (badge + 3 data words,
@@ -648,12 +694,12 @@ mod bare {
     extern "C" fn pqc_consumer() -> ! {
         // Seed the pool from the first device draw.
         let d1 = sched::recv_message(ENTROPY_CAP);
-        pool_reseed(seed_from_message(&d1));
+        entropy::reseed(seed_from_message(&d1));
         println!("entropy: pool seeded from virtio-rng");
 
         // The pool serves entropy on demand: one device seed yields a stream.
-        let a = pool_next_seed();
-        let b = pool_next_seed();
+        let a = entropy::next_seed();
+        let b = entropy::next_seed();
         if a != b {
             println!("entropy: pool serves on demand (draws differ)");
         } else {
@@ -662,11 +708,11 @@ mod bare {
 
         // Fold a second device draw in — reseeding mixes new entropy with state.
         let d2 = sched::recv_message(ENTROPY_CAP);
-        pool_reseed(seed_from_message(&d2));
+        entropy::reseed(seed_from_message(&d2));
         println!("entropy: pool reseeded from virtio-rng");
 
         // Key ML-KEM from a pool draw (not the raw device bytes).
-        let seed = pool_next_seed();
+        let seed = entropy::next_seed();
         match kernel_crypto::ml_kem768_agree(seed) {
             Some(_) => println!("pqc: ML-KEM-768 round-trip ok (pool-seeded)"),
             None => println!("pqc: ML-KEM-768 FAIL (secrets disagreed)"),

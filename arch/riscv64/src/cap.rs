@@ -22,6 +22,8 @@ pub enum Capability {
     Endpoint(EndpointId),
     /// Authority to `restart` the task in this scheduler slot (Phase 5b).
     Restart(usize),
+    /// Authority to call `getrandom` — draw from the kernel entropy pool.
+    Randomness,
 }
 
 /// Look up capability `idx` in `caps`; if it is an endpoint capability,
@@ -42,6 +44,13 @@ pub fn restart_target(caps: &[Option<Capability>], idx: usize) -> Option<usize> 
         Some(Some(Capability::Restart(slot))) => Some(*slot),
         _ => None,
     }
+}
+
+/// True iff capability `idx` is a `Randomness` capability (the authority to
+/// draw from the kernel entropy pool). `false` for an empty slot, an
+/// out-of-range index, or the wrong capability type.
+pub fn has_randomness(caps: &[Option<Capability>], idx: usize) -> bool {
+    matches!(caps.get(idx), Some(Some(Capability::Randomness)))
 }
 
 #[cfg(test)]
@@ -78,6 +87,15 @@ mod tests {
         assert_eq!(restart_target(&caps, 0), None, "an Endpoint cap is not a Restart cap");
         assert_eq!(restart_target(&caps, 1), None, "empty slot");
         assert_eq!(restart_target(&caps, 9), None, "out of range");
+    }
+
+    #[test]
+    fn has_randomness_checks_the_slot() {
+        let caps = [None, Some(Capability::Randomness), Some(Capability::Endpoint(0))];
+        assert!(has_randomness(&caps, 1));
+        assert!(!has_randomness(&caps, 2), "an Endpoint cap is not Randomness");
+        assert!(!has_randomness(&caps, 0), "empty slot");
+        assert!(!has_randomness(&caps, 9), "out of range");
     }
 
     #[test]

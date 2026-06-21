@@ -28,3 +28,4 @@ This folder holds the author's learning notes as systems-programming concepts cl
 - [0016 — A virtio device in user space: the entropy component](0016-virtio-rng-entropy.md)
 - [0017 — call/reply IPC: a server that answers](0017-call-reply-ipc.md)
 - [0018 — A kernel entropy pool](0018-kernel-entropy-pool.md)
+- [0019 — getrandom: capability-gated entropy for U-mode](0019-getrandom-service.md)

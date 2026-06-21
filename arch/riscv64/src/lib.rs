@@ -57,6 +57,12 @@ pub mod heal;
 /// device registers.
 pub mod virtio;
 
+/// The kernel entropy pool: the ChaCha20 CSPRNG (seeded by the virtio-rng
+/// component) that backs the `getrandom` syscall. Gated — it holds a static
+/// cell and is only used by the bare kernel.
+#[cfg(target_arch = "riscv64")]
+pub mod entropy;
+
 /// The architecture identifier this crate targets.
 pub const ARCH: &str = "riscv64";
 
