@@ -68,6 +68,23 @@ impl Message {
     pub const EMPTY: Self = Self { badge: 0, data: [0; 3] };
 }
 
+/// What a U-mode task needs to be relaunched from scratch: its entry point
+/// and the top of its user stack. The kernel keeps this so a `restart`
+/// (Phase 5b) can re-forge the task's first-run context. Kernel tasks are
+/// not restartable and carry `None`.
+#[derive(Debug, Clone, Copy)]
+pub struct Relaunch {
+    pub entry: usize,
+    pub user_sp: usize,
+}
+
+/// Is another restart allowed? `true` while `restarts` is below `bound`.
+/// The kernel's safety cage uses this so a component that keeps crashing is
+/// abandoned (and flagged) once the bound is reached. Pure (host-tested).
+pub fn can_restart(restarts: usize, bound: usize) -> bool {
+    restarts < bound
+}
+
 /// Which side of an IPC rendezvous a blocked task is waiting on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IpcRole {
@@ -105,6 +122,7 @@ pub fn forge_user_context(
     user_sp: usize,
     kstack_top: usize,
     sstatus: usize,
+    generation: usize,
 ) -> Context {
     let mut c = Context::zeroed();
     c.ra = tramp;
@@ -112,6 +130,7 @@ pub fn forge_user_context(
     c.s[0] = entry;
     c.s[1] = user_sp & !0xF;
     c.s[2] = sstatus; // CSR bit-field, not an address — no alignment
+    c.s[3] = generation; // -> a0 at launch (user_trampoline does `mv a0, s3`)
     c
 }
 
@@ -134,6 +153,16 @@ pub struct Task {
     /// In-flight IPC message: a task's outbox while it blocks sending, or
     /// its inbox when a sender delivers to it.
     pub message: Message,
+    /// How to relaunch this task (Phase 5b). `Some` for U-mode components
+    /// (restartable); `None` for kernel tasks.
+    pub relaunch: Option<Relaunch>,
+    /// How many times the self-healer has restarted this task. The kernel's
+    /// retry bound is checked against this (`can_restart`).
+    pub restarts: usize,
+    /// The badge the kernel delivers to the healer when this task crashes —
+    /// the healer's own cap-table index of this task's Restart capability,
+    /// so the healer can act without a slot→cap mapping. 0 if not a patient.
+    pub crash_badge: usize,
 }
 
 #[cfg(test)]
@@ -177,14 +206,23 @@ mod tests {
 
     #[test]
     fn forge_user_context_sets_launch_fields() {
-        // tramp/entry/user_sp/kstack are arbitrary addresses for the test;
-        // 16-alignment is applied to the two stack pointers.
-        let c = forge_user_context(0xAAAA, 0xBBBB, 0x1_0008, 0x2_0008, 0xCAFE);
+        // tramp/entry/user_sp/kstack are arbitrary addresses; 16-alignment is
+        // applied to the two stack pointers. generation rides in s[3].
+        let c = forge_user_context(0xAAAA, 0xBBBB, 0x1_0008, 0x2_0008, 0xCAFE, 2);
         assert_eq!(c.ra, 0xAAAA, "ra = trampoline");
         assert_eq!(c.sp, 0x2_0000, "sp = kstack_top, 16-aligned");
         assert_eq!(c.s[0], 0xBBBB, "s0 = user entry (-> sepc)");
         assert_eq!(c.s[1], 0x1_0000, "s1 = user sp, 16-aligned");
         assert_eq!(c.s[2], 0xCAFE, "s2 = sstatus");
-        assert_eq!(c.s[3..], [0usize; 9], "untouched slots stay zero");
+        assert_eq!(c.s[3], 2, "s3 = launch generation (-> a0)");
+        assert_eq!(c.s[4..], [0usize; 8], "untouched slots stay zero");
+    }
+
+    #[test]
+    fn can_restart_respects_the_bound() {
+        assert!(can_restart(0, 2));
+        assert!(can_restart(1, 2));
+        assert!(!can_restart(2, 2), "at the bound: refuse");
+        assert!(!can_restart(3, 2), "over the bound: refuse");
     }
 }

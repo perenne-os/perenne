@@ -182,14 +182,23 @@ diagnose before act.
   component contained and diagnosed (matched to KB-0005), with the rest of
   the system running on. QEMU-only.
 
-### Phase 5b — The caged fix
+### Phase 5b — The caged fix  *(done — 2026-06-20)*
 
 - **Goal:** an isolated, capability-gated **user-space** healer that the
   kernel notifies of a crash and that applies the playbook — a **bounded,
   reversible, logged** restart — recovering the component.
-- **Done when:** a crashing component is automatically restarted by the
-  healer and resumes working, with the restart bounded (it gives up and
-  flags after N attempts).
+- **You learn:** isolation + a capability cage make an acting agent safe
+  (agency in user space, enforcement in the kernel); a restart is re-forging
+  the first-run context, with the launch generation handed to the task (see
+  [learning note 0015](../learning/0015-self-healing-the-caged-fix.md)).
+- **Done when:** `./tools/test-qemu.ps1` shows a `transient` component crash,
+  get restarted by the healer, and run to completion (recovered), while an
+  always-crashing `flaky` is restarted only up to the bound and then flagged.
+  QEMU-only.
+
+**Phase 5 (self-healing seed) is complete:** the OS detects, deterministically
+diagnoses (5a), and applies a caged, bounded fix (5b) for a contained
+component crash.
 
 ## Phase 6+ — Breadth
 

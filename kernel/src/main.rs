@@ -92,12 +92,32 @@ mod bare {
             core::ptr::addr_of!(KS_ROGUE) as usize + TASK_STACK,
             mem::build_user_space(ru, NO_DEVICE));
 
-        // A deliberately faulty component, to exercise self-healing: it
-        // crashes (is contained), and the kernel diagnoses the crash (5a).
+        // Phase 5b — the caged fix. The healer (the acting agent, in user
+        // space) blocks on the crash endpoint before either patient runs, so
+        // it is waiting when they crash.
+        let hu = ustack(core::ptr::addr_of!(US_HEALER) as usize);
+        let healer = sched::spawn_user("healer", healer_task, hu.1,
+            core::ptr::addr_of!(KS_HEALER) as usize + TASK_STACK,
+            mem::build_user_space(hu, NO_DEVICE));
+        sched::grant_cap(healer, CRASH_CAP, Capability::Endpoint(sched::CRASH_EP));
+
+        // A patient with a transient fault: crashes once, then recovers.
+        let tu = ustack(core::ptr::addr_of!(US_TRANSIENT) as usize);
+        let transient = sched::spawn_user("transient", transient_task, tu.1,
+            core::ptr::addr_of!(KS_TRANSIENT) as usize + TASK_STACK,
+            mem::build_user_space(tu, NO_DEVICE));
+        // The healer holds transient's Restart cap at cap slot 1; the crash
+        // notification carries badge 1 so the healer uses that exact cap.
+        sched::grant_cap(healer, 1, Capability::Restart(transient));
+        sched::set_crash_badge(transient, 1);
+
+        // A patient that always crashes: exercises the retry bound.
         let fu = ustack(core::ptr::addr_of!(US_FLAKY) as usize);
-        let _flaky = sched::spawn_user("flaky", flaky_task, fu.1,
+        let flaky = sched::spawn_user("flaky", flaky_task, fu.1,
             core::ptr::addr_of!(KS_FLAKY) as usize + TASK_STACK,
             mem::build_user_space(fu, NO_DEVICE));
+        sched::grant_cap(healer, 2, Capability::Restart(flaky));
+        sched::set_crash_badge(flaky, 2);
 
         sched::spawn("idle", idle, core::ptr::addr_of!(KS_IDLE) as usize + TASK_STACK);
 
@@ -173,6 +193,11 @@ mod bare {
     const EP0: usize = 0;
     const EP_CAP: usize = 0;
 
+    /// The healer's cap-table slot holding its `Endpoint(CRASH_EP)` capability
+    /// (it `recv`s on this to learn of crashes). Restart caps live at slots
+    /// 1.. so a crash notification's badge is directly the cap slot to use.
+    const CRASH_CAP: usize = 0;
+
     /// Per-task kernel stack size (also the trap stack a U-mode task's
     /// traps land on). 16 KiB; per-task guard pages stay deferred.
     const TASK_STACK: usize = 16 * 1024;
@@ -180,6 +205,8 @@ mod bare {
     static mut KS_RTC: KStack = [0; TASK_STACK];
     static mut KS_CLIENT: KStack = [0; TASK_STACK];
     static mut KS_ROGUE: KStack = [0; TASK_STACK];
+    static mut KS_HEALER: KStack = [0; TASK_STACK];
+    static mut KS_TRANSIENT: KStack = [0; TASK_STACK];
     static mut KS_FLAKY: KStack = [0; TASK_STACK];
     static mut KS_IDLE: KStack = [0; TASK_STACK];
 
@@ -195,6 +222,10 @@ mod bare {
     static mut US_CLIENT: UStack = UStack([0; USER_STACK_SIZE]);
     #[link_section = ".user_data"]
     static mut US_ROGUE: UStack = UStack([0; USER_STACK_SIZE]);
+    #[link_section = ".user_data"]
+    static mut US_HEALER: UStack = UStack([0; USER_STACK_SIZE]);
+    #[link_section = ".user_data"]
+    static mut US_TRANSIENT: UStack = UStack([0; USER_STACK_SIZE]);
     #[link_section = ".user_data"]
     static mut US_FLAKY: UStack = UStack([0; USER_STACK_SIZE]);
 
@@ -255,6 +286,24 @@ mod bare {
             options(nostack),
         );
         badge
+    }
+
+    /// restart syscall (a7 = 6): a0 = cap index of a Restart capability.
+    /// Returns a0: 0 on success, or `usize::MAX` if the capability check
+    /// failed or the retry bound was reached.
+    ///
+    /// # Safety
+    /// Always sound; the kernel validates the capability and the bound.
+    #[inline(always)]
+    unsafe fn sys_restart(cap: usize) -> usize {
+        let ret;
+        core::arch::asm!(
+            "ecall",
+            in("a7") 6usize,
+            inout("a0") cap => ret,
+            options(nostack),
+        );
+        ret
     }
 
     /// The RTC time server: a user-space driver that exclusively owns the
@@ -344,6 +393,59 @@ mod bare {
             );
             sys_exit(0) // unreachable: the load faults first
         }
+    }
+
+    /// The self-healer (Phase 5b) — the acting agent, in user space. It blocks
+    /// on the crash endpoint; each crash notification's badge IS the cap index
+    /// of the crashed component's Restart capability, so it simply asks the
+    /// kernel to restart that component. The kernel is the cage: it
+    /// capability-checks, enforces the retry bound, and logs. Register-only —
+    /// no `.rodata`, no printing (the kernel logs the actions).
+    #[no_mangle]
+    #[link_section = ".user_text"]
+    extern "C" fn healer_task() -> ! {
+        loop {
+            // SAFETY: we hold Endpoint(CRASH_EP) at CRASH_CAP; recv blocks
+            // until the kernel reports a crash. The returned badge is the cap
+            // index of the crashed component's Restart capability.
+            let cap_idx = unsafe { sys_recv(CRASH_CAP) };
+            // SAFETY: ask the kernel to apply the playbook (a caged restart).
+            unsafe { sys_restart(cap_idx) };
+        }
+    }
+
+    /// A patient with a TRANSIENT fault: it crashes on its first run and
+    /// recovers after the healer restarts it. The kernel passes the launch
+    /// generation in `a0` (0 = first run, >0 = a restart); on the first run we
+    /// fault like `flaky`, and on any restart we run to completion and exit 0
+    /// — proving the component serves again. Register-only (reads `a0` via
+    /// inline asm before any other code; the no-arg `-> !` prologue does not
+    /// touch `a0`).
+    #[no_mangle]
+    #[link_section = ".user_text"]
+    extern "C" fn transient_task() -> ! {
+        let generation: usize;
+        // SAFETY: read the launch generation the kernel placed in a0.
+        unsafe {
+            core::arch::asm!("mv {g}, a0", g = out(reg) generation, options(nomem, nostack, preserves_flags));
+        }
+        if generation == 0 {
+            let _v: u8;
+            // SAFETY: the deliberate first-run fault (a transient bug). The
+            // U-mode load of kernel .text faults (LoadPageFault); the kernel
+            // contains, diagnoses, and (via the healer) restarts us.
+            unsafe {
+                core::arch::asm!(
+                    "lb {v}, 0({p})",
+                    v = out(reg) _v,
+                    p = in(reg) 0x8020_0000usize,
+                    options(nostack),
+                );
+            }
+        }
+        // Recovered (this is a restart): do our work and exit cleanly.
+        // SAFETY: exit is always sound.
+        unsafe { sys_exit(0) }
     }
 
     /// The idle kernel (S-mode) task: cooperatively yield when other tasks
