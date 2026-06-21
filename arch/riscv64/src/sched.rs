@@ -23,9 +23,9 @@ use crate::cap::{cap_lookup, EndpointId};
 #[cfg(target_arch = "riscv64")]
 use crate::task::Relaunch;
 
-/// Maximum concurrent tasks: the 5b demo runs seven (rtc, client, rogue,
-/// healer, transient, flaky, idle) plus one slot of headroom.
-pub const MAX_TASKS: usize = 8;
+/// Maximum concurrent tasks: the demo runs nine (rtc, client, rogue, healer,
+/// transient, flaky, pqc, entropy, idle) plus one slot of headroom.
+pub const MAX_TASKS: usize = 10;
 
 /// The reserved endpoint id the kernel uses to notify the self-healer of a
 /// contained crash. The healer holds an `Endpoint(CRASH_EP)` capability and
@@ -48,7 +48,7 @@ pub struct Scheduler {
 impl Scheduler {
     /// An empty scheduler; `spawn` fills slots and `enter` starts it.
     pub const fn new() -> Self {
-        Self { tasks: [None, None, None, None, None, None, None, None], current: 0 }
+        Self { tasks: [None, None, None, None, None, None, None, None, None, None], current: 0 }
     }
 
     /// Index of the next task to run after `current`, round-robin: scan
@@ -208,6 +208,20 @@ pub fn set_crash_badge(slot: usize, badge: usize) {
     });
 }
 
+/// Set the U-mode launch-register arguments of the task in scheduler `slot`:
+/// `a1`/`a2` at first run (stored in the forged context's `s4`/`s5`; the
+/// trampoline moves them into `a1`/`a2`). Used to hand a driver its device
+/// addresses. (Not re-applied on a 5b restart — restartable launch args are
+/// future work; the entropy component is not a restart patient.)
+#[cfg(target_arch = "riscv64")]
+pub fn set_launch_args(slot: usize, a1: usize, a2: usize) {
+    SCHED.with(|s| {
+        let t = s.tasks[slot].as_mut().expect("set_launch_args: empty task slot");
+        t.context.s[4] = a1;
+        t.context.s[5] = a2;
+    });
+}
+
 /// Voluntarily give up the CPU to the next ready task. Returns when this
 /// task is scheduled again. A no-op if nobody else is ready.
 ///
@@ -318,6 +332,8 @@ user_trampoline:
     csrw sstatus, s2        # SPP = 0, SPIE = 1
     mv sp, s1               # switch to the user stack
     mv a0, s3               # a0 = launch generation (forge put it in s3)
+    mv a1, s4               # a1 = launch arg 1 (set_launch_args put it in s4)
+    mv a2, s5               # a2 = launch arg 2 (set_launch_args put it in s5)
     sret                    # -> U-mode at the entry point
 "#
 );
@@ -553,6 +569,40 @@ pub fn ipc_recv(frame: &mut crate::trap::TrapFrame) {
             // Woken: a sender stored our inbox and set us Ready.
             let msg = SCHED.with(|s| s.tasks[s.current].as_ref().unwrap().message);
             write_message(frame, msg);
+        }
+    }
+}
+
+/// Receive a [`Message`](crate::task::Message) on the endpoint named by
+/// capability `cap_idx`, for a **kernel** (S-mode) task (which cannot use the
+/// U-mode `ecall` IPC path). Blocks until a sender arrives, then returns its
+/// message. The sender uses the ordinary [`ipc_send`]; delivery is identical
+/// regardless of the receiver's privilege. Panics if the caller lacks the
+/// capability (a kernel-config bug).
+#[cfg(target_arch = "riscv64")]
+pub fn recv_message(cap_idx: usize) -> crate::task::Message {
+    enum K {
+        Got(crate::task::Message),
+        Block(EndpointId),
+    }
+    let step = SCHED.with(|s| {
+        let cur = s.current;
+        let ep = cap_lookup(&s.tasks[cur].as_ref().unwrap().caps, cap_idx)
+            .expect("recv_message: caller lacks the endpoint capability");
+        match find_blocked(s, ep, IpcRole::Send) {
+            Some(si) => {
+                let msg = s.tasks[si].as_ref().unwrap().message;
+                s.tasks[si].as_mut().unwrap().state = TaskState::Ready;
+                K::Got(msg)
+            }
+            None => K::Block(ep),
+        }
+    });
+    match step {
+        K::Got(msg) => msg,
+        K::Block(ep) => {
+            block_current(ep, IpcRole::Recv);
+            SCHED.with(|s| s.tasks[s.current].as_ref().unwrap().message)
         }
     }
 }
