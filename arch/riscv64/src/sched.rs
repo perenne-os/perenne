@@ -23,9 +23,20 @@ use crate::cap::{cap_lookup, EndpointId};
 #[cfg(target_arch = "riscv64")]
 use crate::task::Relaunch;
 
-/// Maximum concurrent tasks: the 3b-i demo runs five (idle + four U-mode
-/// tasks) plus one slot of headroom.
-pub const MAX_TASKS: usize = 6;
+/// Maximum concurrent tasks: the 5b demo runs seven (rtc, client, rogue,
+/// healer, transient, flaky, idle) plus one slot of headroom.
+pub const MAX_TASKS: usize = 8;
+
+/// The reserved endpoint id the kernel uses to notify the self-healer of a
+/// contained crash. The healer holds an `Endpoint(CRASH_EP)` capability and
+/// `recv`-blocks on it. Distinct from the demo endpoint `EP0` (= 0).
+#[cfg(target_arch = "riscv64")]
+pub const CRASH_EP: crate::cap::EndpointId = 1;
+
+/// How many times the self-healer may restart a single component before the
+/// kernel gives up and flags it for triage (the safety-cage bound).
+#[cfg(target_arch = "riscv64")]
+pub const MAX_RESTARTS: usize = 2;
 
 /// The run queue: a fixed array of optional tasks and the index of the
 /// one currently running.
@@ -37,7 +48,7 @@ pub struct Scheduler {
 impl Scheduler {
     /// An empty scheduler; `spawn` fills slots and `enter` starts it.
     pub const fn new() -> Self {
-        Self { tasks: [None, None, None, None, None, None], current: 0 }
+        Self { tasks: [None, None, None, None, None, None, None, None], current: 0 }
     }
 
     /// Index of the next task to run after `current`, round-robin: scan
@@ -184,6 +195,19 @@ pub fn grant_cap(slot: usize, cap_slot: usize, cap: crate::cap::Capability) {
     });
 }
 
+/// Set the crash-notification badge of the task in scheduler `slot` — the
+/// healer's cap-table index of that task's Restart capability. Called at boot
+/// for each patient so a crash notification names the right capability.
+#[cfg(target_arch = "riscv64")]
+pub fn set_crash_badge(slot: usize, badge: usize) {
+    SCHED.with(|s| {
+        s.tasks[slot]
+            .as_mut()
+            .expect("set_crash_badge: empty task slot")
+            .crash_badge = badge;
+    });
+}
+
 /// Voluntarily give up the CPU to the next ready task. Returns when this
 /// task is scheduled again. A no-op if nobody else is ready.
 ///
@@ -293,6 +317,7 @@ user_trampoline:
     csrw sepc, s0           # user entry point
     csrw sstatus, s2        # SPP = 0, SPIE = 1
     mv sp, s1               # switch to the user stack
+    mv a0, s3               # a0 = launch generation (forge put it in s3)
     sret                    # -> U-mode at the entry point
 "#
 );
@@ -359,6 +384,9 @@ pub fn exit_current(reason: ExitReason) -> ! {
     // SAFETY: runs inside the trap handler with interrupts off; single hart.
     let switch = SCHED.with(|s| {
         let current = s.current;
+        // If a crash wakes the healer, run it next so its one-message inbox
+        // is drained before any other patient can crash.
+        let mut prefer: Option<usize> = None;
         match reason {
             ExitReason::Exited(code) => {
                 crate::println!("sched: task '{}' exited (code {code})", s.tasks[current].as_ref().unwrap().name)
@@ -366,7 +394,7 @@ pub fn exit_current(reason: ExitReason) -> ! {
             ExitReason::Killed(cause) => {
                 crate::println!("sched: task '{}' killed by {cause:?}", s.tasks[current].as_ref().unwrap().name);
                 // Phase 5a: consult the deterministic knowledge organism and
-                // log the diagnosis (no action yet — the caged restart is 5b).
+                // log the diagnosis.
                 match crate::heal::diagnose(cause) {
                     Some(issue) => crate::println!(
                         "heal: diagnosed {} ({}) -> playbook: {}",
@@ -374,10 +402,28 @@ pub fn exit_current(reason: ExitReason) -> ! {
                     ),
                     None => crate::println!("heal: no known issue for {cause:?} (recorded for triage)"),
                 }
+                // Phase 5b: if this is a restartable component, notify a
+                // user-space healer waiting on the crash endpoint so it can
+                // apply the playbook (a caged restart). Reuses the IPC
+                // rendezvous: deliver to a recv-blocked healer and wake it,
+                // then run it next.
+                if s.tasks[current].as_ref().unwrap().relaunch.is_some() {
+                    let badge = s.tasks[current].as_ref().unwrap().crash_badge;
+                    let name = s.tasks[current].as_ref().unwrap().name;
+                    match find_blocked(s, CRASH_EP, IpcRole::Recv) {
+                        Some(h) => {
+                            s.tasks[h].as_mut().unwrap().message =
+                                Message { badge, data: [0; 3] };
+                            s.tasks[h].as_mut().unwrap().state = TaskState::Ready;
+                            prefer = Some(h);
+                        }
+                        None => crate::println!("heal: no healer for '{name}' (left down)"),
+                    }
+                }
             }
         }
         s.tasks[current].as_mut().unwrap().state = TaskState::Exited;
-        let next = s.pick_next();
+        let next = prefer.unwrap_or_else(|| s.pick_next());
         assert_ne!(next, current, "exit_current: no runnable successor (idle must be Ready)");
         s.tasks[next].as_mut().unwrap().state = TaskState::Running;
         s.current = next;
@@ -560,6 +606,60 @@ pub fn ipc_send(frame: &mut crate::trap::TrapFrame) {
             frame.regs[9] = 0; // a receiver took our message and woke us
         }
     }
+}
+
+/// Service a `restart` syscall (Phase 5b — the caged fix). `a0`
+/// (= `frame.regs[9]`) is the capability index of a `Restart` capability.
+/// The kernel capability-checks it, enforces the per-task retry bound, and —
+/// if allowed — re-forges the target's first-run context (reusing its address
+/// space, stacks, and data page), passing the new launch generation, and
+/// marks it `Ready`. Every outcome is logged. `a0` becomes `0` on success or
+/// `usize::MAX` on refusal (bad/wrong-type cap, or the bound was reached).
+#[cfg(target_arch = "riscv64")]
+pub fn restart(frame: &mut crate::trap::TrapFrame) {
+    let cap_idx = frame.regs[9];
+    let ok = SCHED.with(|s| {
+        let cur = s.current;
+        let target = match crate::cap::restart_target(
+            &s.tasks[cur].as_ref().unwrap().caps,
+            cap_idx,
+        ) {
+            Some(t) => t,
+            None => return false, // no/wrong capability — refuse
+        };
+        let restarts = s.tasks[target].as_ref().unwrap().restarts;
+        let name = s.tasks[target].as_ref().unwrap().name;
+        if !crate::task::can_restart(restarts, MAX_RESTARTS) {
+            crate::println!(
+                "heal: giving up on '{name}' after {restarts} restarts (flagged for triage)"
+            );
+            return false;
+        }
+        let relaunch = s.tasks[target]
+            .as_ref()
+            .unwrap()
+            .relaunch
+            .expect("restart target must be a restartable U-mode component");
+        let kstack_top = s.tasks[target].as_ref().unwrap().stack_top;
+        let satp = s.tasks[target].as_ref().unwrap().satp;
+        let generation = restarts + 1;
+        let context = crate::task::forge_user_context(
+            user_trampoline as *const () as usize,
+            relaunch.entry,
+            relaunch.user_sp,
+            kstack_top,
+            crate::task::user_sstatus(crate::csr::sstatus_read()),
+            generation,
+        );
+        let t = s.tasks[target].as_mut().unwrap();
+        t.context = context;
+        t.satp = satp; // unchanged; explicit for clarity (same address space)
+        t.restarts = generation;
+        t.state = TaskState::Ready;
+        crate::println!("heal: restarted '{}' (attempt {})", t.name, t.restarts);
+        true
+    });
+    frame.regs[9] = if ok { 0 } else { usize::MAX };
 }
 
 #[cfg(test)]
