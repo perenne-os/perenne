@@ -22,7 +22,10 @@
 # a user-space healer, notified by the kernel of a contained crash, restarts a
 # 'transient' component which then recovers and runs to completion, while the
 # always-crashing 'flaky' is restarted only up to the bound and then flagged
-# for triage. The rest of the system keeps running throughout.
+# for triage; and a second user-space component (a virtio-rng driver) provides
+# real hardware entropy — it draws two differing samples from the device and a
+# kernel consumer seeds ML-KEM-768 with them, replacing Phase 3c's fixed seed.
+# The rest of the system keeps running throughout.
 # (Earlier IPC/isolation proofs are subsumed by this component demo, which
 # still runs each task in its own address space.)
 # Usage: ./tools/test-qemu.ps1     (exit code 0 = pass, 1 = fail)
@@ -49,6 +52,8 @@ function Read-LogText($path) {
 $qemu = Start-Process qemu-system-riscv64 -PassThru -NoNewWindow -ArgumentList @(
     "-machine", "virt",
     "-m", "192M",
+    "-global", "virtio-mmio.force-legacy=false",
+    "-device", "virtio-rng-device",
     "-display", "none",
     "-serial", "file:$serialLog",
     "-bios", "default",
@@ -66,7 +71,8 @@ $mustMatch = @(
     "ipc: 'rtc' blocks on recv",
     "sched: task 'rtc' exited \(code \d{15,}\)",
     "ipc: 'rogue' send rejected \(no capability\)",
-    "pqc: ML-KEM-768 round-trip ok",
+    "entropy: virtio-rng live \(two draws differ\)",
+    "pqc: ML-KEM-768 round-trip ok \(entropy-seeded\)",
     "sched: task 'flaky' killed by LoadPageFault",
     "heal: diagnosed KB-0005",
     "sched: task 'transient' killed by LoadPageFault",
@@ -92,7 +98,7 @@ finally {
 }
 
 if ($missing.Count -eq 0) {
-    Write-Host "BOOT TEST PASS: 2a + 2b + 3c ML-KEM + 4a device-tree (192 MiB) + 4b ns16550 console + the first user-space component (ADR 0007): an RTC driver serves the live clock over capability-checked IPC; a rogue is refused; Phase 5a self-healing: a contained component crash is deterministically diagnosed (KB-0005); and Phase 5b the caged fix: a user-space healer restarts a 'transient' component (it recovers) while 'flaky' is bounded and flagged - all while the system keeps running." -ForegroundColor Green
+    Write-Host "BOOT TEST PASS: 2a + 2b + 3c ML-KEM + 4a device-tree (192 MiB) + 4b ns16550 console + the first user-space component (ADR 0007): an RTC driver serves the live clock over capability-checked IPC; a rogue is refused; Phase 5a self-healing: a contained component crash is deterministically diagnosed (KB-0005); and Phase 5b the caged fix: a user-space healer restarts a 'transient' component (it recovers) while 'flaky' is bounded and flagged; and a virtio-rng entropy component feeds real device entropy into ML-KEM (retiring the fixed seed) - all while the system keeps running." -ForegroundColor Green
     exit 0
 } else {
     Write-Host "BOOT TEST FAIL: missing within 30s: $($missing -join ', '). Serial output:" -ForegroundColor Red
