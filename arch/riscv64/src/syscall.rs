@@ -23,6 +23,9 @@ pub enum Syscall {
     Send,
     /// `recv(cap)` — synchronous IPC receive.
     Recv,
+    /// `restart(cap)` — the self-healer asks the kernel to restart the
+    /// component named by a Restart capability (Phase 5b).
+    Restart,
     /// An unrecognized syscall number (a user bug, not a kernel bug).
     Unknown(usize),
 }
@@ -35,6 +38,7 @@ pub fn decode_syscall(a7: usize) -> Syscall {
         3 => Syscall::Yield,
         4 => Syscall::Send,
         5 => Syscall::Recv,
+        6 => Syscall::Restart,
         n => Syscall::Unknown(n),
     }
 }
@@ -112,6 +116,11 @@ mod tests {
         assert_eq!(decode_syscall(4), Syscall::Send);
         assert_eq!(decode_syscall(5), Syscall::Recv);
     }
+
+    #[test]
+    fn decodes_restart_syscall() {
+        assert_eq!(decode_syscall(6), Syscall::Restart);
+    }
 }
 
 /// What the trap handler should do after a syscall returns.
@@ -155,6 +164,10 @@ pub fn dispatch(frame: &mut crate::trap::TrapFrame) -> Outcome {
         }
         Syscall::Recv => {
             crate::sched::ipc_recv(frame);
+            Outcome::Resume
+        }
+        Syscall::Restart => {
+            crate::sched::restart(frame);
             Outcome::Resume
         }
         Syscall::Unknown(_) => {
