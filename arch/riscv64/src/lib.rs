@@ -52,6 +52,11 @@ pub mod dt;
 /// (Phase 5a — diagnosis only; the caged healer that acts is 5b).
 pub mod heal;
 
+/// virtio-mmio constants + the RNG probe (the kernel side of the user-space
+/// entropy driver). Pure constants/helpers host-tested; the gated probe reads
+/// device registers.
+pub mod virtio;
+
 /// The architecture identifier this crate targets.
 pub const ARCH: &str = "riscv64";
 

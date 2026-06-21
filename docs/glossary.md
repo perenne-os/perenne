@@ -50,6 +50,9 @@ Plain-language definitions of terms used throughout these docs. Aimed at someone
 - **`timebase-frequency`** — the device-tree property giving the rate of the `time` counter; the kernel reads it to derive timer deadlines (replacing the hardcoded timebase).
 - **Memory node** — the device-tree node whose `reg` property gives the RAM base address and size; the kernel reads it to learn how much memory it has.
 - **MMIO (memory-mapped I/O)** — device registers exposed at fixed physical addresses and accessed with ordinary loads/stores; in S-mode the kernel must map those pages into its page table (and, here, into every address space) before touching them.
+- **virtio** — a standard interface for *paravirtualized* devices (rng, block, net…): the guest talks to a simple, well-specified device the hypervisor provides, instead of emulating real hardware. Our entropy driver uses virtio-mmio (the memory-mapped transport).
+- **Virtqueue** — the shared-memory channel between a virtio driver and device: a descriptor table (buffers) plus an *available* ring (driver→device) and a *used* ring (device→driver). The driver publishes a buffer and the device returns it filled.
+- **DMA (direct memory access)** — a device reading/writing system memory directly, at *physical* addresses, without the CPU copying each byte. The virtqueue and its buffers live in DMA memory shared with the device.
 - **UART** — the serial-port controller that turns bytes into the serial line signal; the kernel's text console.
 - **ns16550** — the ubiquitous 16550-family UART (QEMU virt and many boards), programmed via a few byte registers spaced by `reg-shift`.
 - **`THR` / `LSR` / `THRE`** — the 16550 transmit-holding register (where you write a byte), the line-status register, and its "holding register empty" bit (`0x20`) the driver polls before transmitting.
