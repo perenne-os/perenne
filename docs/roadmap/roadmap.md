@@ -159,9 +159,22 @@ the substrate the self-healer (Phase 5) runs on.
   recv, then read and report the live clock on a client's capability-checked
   request, with a rogue (no capability) refused. QEMU-only; no board.
 
-(Next candidates: a virtio-rng entropy component — real crypto entropy,
-retiring Phase 3c's fixed seed — and call/reply IPC so a server can return a
-value to the caller instead of via its exit code.)
+### Second component — virtio-rng entropy driver  *(done — 2026-06-21)*
+
+- **Goal:** a more complex user-space driver — the QEMU virtio-rng device
+  (virtqueue + DMA) — providing real hardware entropy that seeds ML-KEM,
+  retiring Phase 3c's fixed seed.
+- **You learn:** what a virtio device is (the virtio-mmio handshake, a split
+  virtqueue as shared DMA memory), why identity mapping makes DMA trivial, and
+  that even a complex driver fits the user-space-component model (see
+  [learning note 0016](../learning/0016-virtio-rng-entropy.md)).
+- **Done when:** `./tools/test-qemu.ps1` (with `-device virtio-rng-device`)
+  shows the component draw two differing entropy samples and the ML-KEM-768
+  round-trip succeed seeded by them. QEMU-only.
+
+(Next candidates: call/reply IPC so a server can return a value to the caller
+instead of via its exit code; a kernel entropy pool/CSPRNG seeded by this
+source; an interrupt-driven (PLIC) device path.)
 
 ## Phase 5 — Self-healing seed
 
