@@ -183,8 +183,21 @@ the substrate the self-healer (Phase 5) runs on.
 - **Done when:** `./tools/test-qemu.ps1` shows the RTC client `call` the server
   and exit with the returned live-clock value. QEMU-only.
 
-(Next candidates: a kernel entropy pool/CSPRNG seeded by virtio-rng; an
-interrupt-driven (PLIC) device path; one-shot reply capabilities for
+### Kernel entropy pool  *(done — 2026-06-21)*
+
+- **Goal:** a reseedable kernel CSPRNG seeded by the virtio-rng component,
+  serving entropy on demand to kernel crypto — replacing the one-shot boot
+  seed for ML-KEM.
+- **You learn:** a kernel RNG is a CSPRNG seeded by a hardware source (a finite
+  read becomes unlimited output); reseeding *mixes* new entropy into existing
+  state rather than replacing it (see
+  [learning note 0018](../learning/0018-kernel-entropy-pool.md)).
+- **Done when:** `./tools/test-qemu.ps1` shows the pool seeded from virtio-rng,
+  serving distinct on-demand draws, reseeded, and keying the ML-KEM round-trip.
+  QEMU-only.
+
+(Next candidates: a capability-gated U-mode `getrandom` service over the pool;
+an interrupt-driven (PLIC) device path; one-shot reply capabilities for
 deferred/forwarded replies.)
 
 ## Phase 5 — Self-healing seed

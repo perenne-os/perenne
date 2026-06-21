@@ -611,6 +611,23 @@ mod bare {
         }
     }
 
+    /// The kernel entropy pool: a ChaCha20 CSPRNG seeded by the virtio-rng
+    /// component, serving entropy to kernel code on demand (reseedable). The
+    /// same single-hart cell primitive the scheduler/frame allocator use.
+    static ENTROPY_POOL: mem::SingleHartCell<kernel_crypto::EntropyPool> =
+        mem::SingleHartCell::new(kernel_crypto::EntropyPool::new());
+
+    /// Fold 32 bytes of device entropy into the pool (seeds on first call,
+    /// mixes after).
+    fn pool_reseed(bytes: [u8; 32]) {
+        ENTROPY_POOL.with(|p| p.reseed(bytes));
+    }
+
+    /// Draw a fresh 32-byte seed from the pool (the kernel seeds it first).
+    fn pool_next_seed() -> [u8; 32] {
+        ENTROPY_POOL.with(|p| p.next_seed())
+    }
+
     /// Rebuild a 32-byte ML-KEM seed from an IPC message (badge + 3 data words,
     /// each a little-endian `u64`).
     fn seed_from_message(m: &Message) -> [u8; 32] {
@@ -622,22 +639,36 @@ mod bare {
         out
     }
 
-    /// The entropy consumer (kernel task): receives two 32-byte draws from the
-    /// entropy component, confirms they differ (a live source), and runs the
-    /// ML-KEM-768 round-trip seeded by real device entropy — retiring Phase
-    /// 3c's fixed seed. Then idles cooperatively (kernel tasks never return).
+    /// The entropy consumer (kernel task): seeds the kernel entropy pool from
+    /// the virtio-rng component's device draws, proves the pool serves entropy
+    /// on demand (one device seed yields a stream) and reseeds with fresh
+    /// entropy, then keys the ML-KEM-768 round-trip from a pool draw — so the
+    /// post-quantum demo is seeded by the reseedable pool, not a one-shot read.
+    /// Then idles cooperatively (kernel tasks never return).
     extern "C" fn pqc_consumer() -> ! {
-        let m1 = sched::recv_message(ENTROPY_CAP);
-        let m2 = sched::recv_message(ENTROPY_CAP);
-        let seed1 = seed_from_message(&m1);
-        let seed2 = seed_from_message(&m2);
-        if seed1 != seed2 {
-            println!("entropy: virtio-rng live (two draws differ)");
+        // Seed the pool from the first device draw.
+        let d1 = sched::recv_message(ENTROPY_CAP);
+        pool_reseed(seed_from_message(&d1));
+        println!("entropy: pool seeded from virtio-rng");
+
+        // The pool serves entropy on demand: one device seed yields a stream.
+        let a = pool_next_seed();
+        let b = pool_next_seed();
+        if a != b {
+            println!("entropy: pool serves on demand (draws differ)");
         } else {
-            println!("entropy: WARNING virtio-rng two draws identical");
+            println!("entropy: WARNING pool draws identical");
         }
-        match kernel_crypto::ml_kem768_agree(seed1) {
-            Some(_) => println!("pqc: ML-KEM-768 round-trip ok (entropy-seeded)"),
+
+        // Fold a second device draw in — reseeding mixes new entropy with state.
+        let d2 = sched::recv_message(ENTROPY_CAP);
+        pool_reseed(seed_from_message(&d2));
+        println!("entropy: pool reseeded from virtio-rng");
+
+        // Key ML-KEM from a pool draw (not the raw device bytes).
+        let seed = pool_next_seed();
+        match kernel_crypto::ml_kem768_agree(seed) {
+            Some(_) => println!("pqc: ML-KEM-768 round-trip ok (pool-seeded)"),
             None => println!("pqc: ML-KEM-768 FAIL (secrets disagreed)"),
         }
         loop {
