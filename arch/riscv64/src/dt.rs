@@ -15,6 +15,9 @@ pub struct MachineInfo {
     pub uart_base: usize,
     pub uart_reg_shift: u32,
     pub rtc_base: usize,
+    /// Bases of the `virtio,mmio` transport slots (QEMU `virt` exposes 8).
+    pub virtio_mmio: [usize; 8],
+    pub virtio_mmio_count: usize,
 }
 
 const FDT_MAGIC: u32 = 0xd00d_feed;
@@ -81,6 +84,9 @@ pub fn parse(dtb: &[u8]) -> Option<MachineInfo> {
     let mut uart: Option<(usize, u32)> = None;
     let mut node_is_rtc = false;
     let mut rtc: Option<usize> = None;
+    let mut node_is_virtio = false;
+    let mut virtio_mmio = [0usize; 8];
+    let mut virtio_count = 0usize;
 
     loop {
         let tok = be_u32(dtb, pos)?;
@@ -97,6 +103,7 @@ pub fn parse(dtb: &[u8]) -> Option<MachineInfo> {
                 node_reg = None;
                 node_shift = 0;
                 node_is_rtc = false;
+                node_is_virtio = false;
                 pos = (pos + name_len + 1 + 3) & !3; // past name + NUL, 4-pad
             }
             FDT_END_NODE => {
@@ -108,6 +115,14 @@ pub fn parse(dtb: &[u8]) -> Option<MachineInfo> {
                 if node_is_rtc && rtc.is_none() {
                     if let Some(b) = node_reg {
                         rtc = Some(b);
+                    }
+                }
+                if node_is_virtio {
+                    if let Some(b) = node_reg {
+                        if virtio_count < virtio_mmio.len() {
+                            virtio_mmio[virtio_count] = b;
+                            virtio_count += 1;
+                        }
                     }
                 }
                 depth = depth.checked_sub(1)?;
@@ -147,6 +162,9 @@ pub fn parse(dtb: &[u8]) -> Option<MachineInfo> {
                 if pname == b"compatible" && val.windows(8).any(|w| w == b"goldfish") {
                     node_is_rtc = true;
                 }
+                if pname == b"compatible" && val.windows(11).any(|w| w == b"virtio,mmio") {
+                    node_is_virtio = true;
+                }
                 if pname == b"reg-shift" && len >= 4 {
                     node_shift = be_u32(val, 0)?;
                 }
@@ -166,6 +184,8 @@ pub fn parse(dtb: &[u8]) -> Option<MachineInfo> {
         uart_base,
         uart_reg_shift,
         rtc_base: rtc?,
+        virtio_mmio,
+        virtio_mmio_count: virtio_count,
     })
 }
 
@@ -201,6 +221,9 @@ mod tests {
         assert_eq!(mi.uart_base, 0x1000_0000, "uart base");
         assert_eq!(mi.uart_reg_shift, 0, "uart reg-shift");
         assert_eq!(mi.rtc_base, 0x10_1000, "rtc base");
+        assert_eq!(mi.virtio_mmio_count, 8, "QEMU virt has 8 virtio-mmio slots");
+        assert!(mi.virtio_mmio[..mi.virtio_mmio_count].contains(&0x1000_1000), "lowest slot");
+        assert!(mi.virtio_mmio[..mi.virtio_mmio_count].contains(&0x1000_8000), "highest slot (where -device attaches)");
     }
 
     #[test]
