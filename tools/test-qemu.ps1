@@ -14,7 +14,9 @@
 # a direct ns16550 UART driver carries all console output; and the first
 # user-space component (ADR 0007): an RTC driver running as an unprivileged
 # component that owns the clock (its MMIO mapped only into it) and serves
-# time-reads over a capability-checked endpoint — a rogue without the
+# time-reads over a capability-checked endpoint via call/reply — a real server
+# that loops recv->read->reply, returning the live clock to the caller (the
+# client exits with the time it received) — a rogue without the
 # capability is refused; and the first cell of the self-healing knowledge
 # organism (Phase 5a) — a deliberately faulty 'flaky' component crashes, is
 # contained, and is deterministically diagnosed against the knowledge base
@@ -69,7 +71,7 @@ $mustMatch = @(
     "wx: rodata write blocked",
     "frames: alloc/free ok",
     "ipc: 'rtc' blocks on recv",
-    "sched: task 'rtc' exited \(code \d{15,}\)",
+    "sched: task 'client' exited \(code \d{15,}\)",
     "ipc: 'rogue' send rejected \(no capability\)",
     "entropy: virtio-rng live \(two draws differ\)",
     "pqc: ML-KEM-768 round-trip ok \(entropy-seeded\)",

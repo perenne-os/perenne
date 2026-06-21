@@ -172,9 +172,20 @@ the substrate the self-healer (Phase 5) runs on.
   shows the component draw two differing entropy samples and the ML-KEM-768
   round-trip succeed seeded by them. QEMU-only.
 
-(Next candidates: call/reply IPC so a server can return a value to the caller
-instead of via its exit code; a kernel entropy pool/CSPRNG seeded by this
-source; an interrupt-driven (PLIC) device path.)
+### call/reply IPC  *(done — 2026-06-21)*
+
+- **Goal:** request/response IPC so a server returns a value to the task that
+  called it, instead of via an exit code or a one-way send.
+- **You learn:** `call` is an atomic send + await-reply; the kernel binds each
+  reply to its caller with a back-pointer (no reply capability needed for a
+  single-hart, one-call-at-a-time server) (see
+  [learning note 0017](../learning/0017-call-reply-ipc.md)).
+- **Done when:** `./tools/test-qemu.ps1` shows the RTC client `call` the server
+  and exit with the returned live-clock value. QEMU-only.
+
+(Next candidates: a kernel entropy pool/CSPRNG seeded by virtio-rng; an
+interrupt-driven (PLIC) device path; one-shot reply capabilities for
+deferred/forwarded replies.)
 
 ## Phase 5 — Self-healing seed
 

@@ -26,6 +26,10 @@ pub enum Syscall {
     /// `restart(cap)` — the self-healer asks the kernel to restart the
     /// component named by a Restart capability (Phase 5b).
     Restart,
+    /// `call(cap, badge, data..)` — send a request and block for the reply.
+    Call,
+    /// `reply(badge, data..)` — answer the caller the kernel recorded.
+    Reply,
     /// An unrecognized syscall number (a user bug, not a kernel bug).
     Unknown(usize),
 }
@@ -39,6 +43,8 @@ pub fn decode_syscall(a7: usize) -> Syscall {
         4 => Syscall::Send,
         5 => Syscall::Recv,
         6 => Syscall::Restart,
+        7 => Syscall::Call,
+        8 => Syscall::Reply,
         n => Syscall::Unknown(n),
     }
 }
@@ -121,6 +127,12 @@ mod tests {
     fn decodes_restart_syscall() {
         assert_eq!(decode_syscall(6), Syscall::Restart);
     }
+
+    #[test]
+    fn decodes_call_and_reply() {
+        assert_eq!(decode_syscall(7), Syscall::Call);
+        assert_eq!(decode_syscall(8), Syscall::Reply);
+    }
 }
 
 /// What the trap handler should do after a syscall returns.
@@ -168,6 +180,14 @@ pub fn dispatch(frame: &mut crate::trap::TrapFrame) -> Outcome {
         }
         Syscall::Restart => {
             crate::sched::restart(frame);
+            Outcome::Resume
+        }
+        Syscall::Call => {
+            crate::sched::ipc_call(frame);
+            Outcome::Resume
+        }
+        Syscall::Reply => {
+            crate::sched::ipc_reply(frame);
             Outcome::Resume
         }
         Syscall::Unknown(_) => {

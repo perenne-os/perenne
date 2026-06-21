@@ -290,6 +290,50 @@ mod bare {
         ret
     }
 
+    /// call syscall (a7 = 7): a0 = cap, a1 = badge, a2..a4 = data (zero here).
+    /// Sends the request and blocks for the reply; returns the reply badge in
+    /// a0 (reply data words are discarded here), or `usize::MAX` on bad cap.
+    ///
+    /// # Safety
+    /// Always sound; the kernel validates the capability and blocks us until a
+    /// server replies.
+    #[inline(always)]
+    unsafe fn sys_call(cap: usize, badge: usize) -> usize {
+        let ret;
+        core::arch::asm!(
+            "ecall",
+            in("a7") 7usize,
+            inout("a0") cap => ret,
+            inout("a1") badge => _,
+            inout("a2") 0usize => _,
+            inout("a3") 0usize => _,
+            in("a4") 0usize,
+            options(nostack),
+        );
+        ret
+    }
+
+    /// reply syscall (a7 = 8): a0 = badge, a1..a3 = data (zero here). Answers
+    /// the caller the kernel recorded. Returns 0, or `usize::MAX` if there is
+    /// no pending caller.
+    ///
+    /// # Safety
+    /// Always sound; the kernel routes the reply to the recorded caller.
+    #[inline(always)]
+    unsafe fn sys_reply(badge: usize) -> usize {
+        let ret;
+        core::arch::asm!(
+            "ecall",
+            in("a7") 8usize,
+            inout("a0") badge => ret,
+            in("a1") 0usize,
+            in("a2") 0usize,
+            in("a3") 0usize,
+            options(nostack),
+        );
+        ret
+    }
+
     /// recv syscall (a7 = 5): a0 = cap index. Returns the badge in a0 (the
     /// data words come back in a1..a3, unused here). Blocks until a sender
     /// arrives.
@@ -397,54 +441,56 @@ mod bare {
 
     /// The RTC time server: a user-space driver that exclusively owns the
     /// goldfish real-time clock — its MMIO is mapped R-U into THIS component
-    /// only (3b-ii isolation). It receives one request over its endpoint,
-    /// reads the clock, and reports the value as its exit code (the kernel
-    /// formats and prints it). The kernel never touches the RTC.
+    /// only (3b-ii isolation). It is a real call/reply server: it loops,
+    /// receiving a request, reading the clock, and `reply`ing the time to the
+    /// caller (the kernel routes the reply to whoever called). The kernel never
+    /// touches the RTC.
     ///
-    /// Two U-mode codegen rules shape this: (1) the MMIO read uses inline asm,
-    /// not `core::ptr::read_volatile`, because in a debug build that `#[inline]`
-    /// core fn may NOT be inlined and would become a call into kernel `.text`,
-    /// which a U-mode task cannot fetch; (2) we report via the exit code rather
-    /// than formatting a string here, so there is no buffer/`.rodata`/builtin
-    /// hazard at all — the kernel does the formatting.
+    /// The MMIO read uses inline asm, not `core::ptr::read_volatile`, because
+    /// in a debug build that `#[inline]` core fn may NOT be inlined and would
+    /// become a call into kernel `.text`, which a U-mode task cannot fetch.
     ///
     /// The base 0x101000 is the goldfish-rtc MMIO the kernel discovered from
-    /// the device tree and mapped into our address space (passing the base to
-    /// the component is future work).
+    /// the device tree and mapped into our address space.
     #[no_mangle]
     #[link_section = ".user_text"]
     extern "C" fn rtc_server() -> ! {
-        // SAFETY: we hold the endpoint cap at EP_CAP; recv blocks for a request.
-        let _req = unsafe { sys_recv(EP_CAP) };
-        let low: u32;
-        let high: u32;
-        // SAFETY: the goldfish RTC page is mapped R-U in our address space;
-        // reading TIME_LOW (offset 0) latches TIME_HIGH (offset 4).
-        unsafe {
-            core::arch::asm!(
-                "lw {lo}, 0({base})",
-                "lw {hi}, 4({base})",
-                base = in(reg) 0x10_1000usize,
-                lo = out(reg) low,
-                hi = out(reg) high,
-                options(nostack),
-            );
+        loop {
+            // SAFETY: we hold the endpoint cap at EP_CAP; recv blocks for a
+            // request, and the kernel records the caller so our reply reaches it.
+            let _req = unsafe { sys_recv(EP_CAP) };
+            let low: u32;
+            let high: u32;
+            // SAFETY: the goldfish RTC page is mapped R-U in our address space;
+            // reading TIME_LOW (offset 0) latches TIME_HIGH (offset 4).
+            unsafe {
+                core::arch::asm!(
+                    "lw {lo}, 0({base})",
+                    "lw {hi}, 4({base})",
+                    base = in(reg) 0x10_1000usize,
+                    lo = out(reg) low,
+                    hi = out(reg) high,
+                    options(nostack),
+                );
+            }
+            let t = ((high as usize) << 32) | (low as usize);
+            // SAFETY: reply the live clock to the caller; the client's `call`
+            // returns it. Then loop to serve the next request.
+            unsafe { sys_reply(t) };
         }
-        let t = ((high as usize) << 32) | (low as usize);
-        // SAFETY: report the clock as our exit code; the kernel prints it. A
-        // large, non-zero nanosecond count proves we read live hardware.
-        unsafe { sys_exit(t) }
     }
 
-    /// A client of the RTC server: request the time once (badge 1 =
-    /// "report"), then exit. Holds the endpoint capability.
+    /// A client of the RTC server: `call` it (badge 1 = "report time") and
+    /// receive the live clock back, then exit with it — proving the value
+    /// crossed back from the server to the caller via call/reply.
     #[no_mangle]
     #[link_section = ".user_text"]
     extern "C" fn rtc_client() -> ! {
-        // SAFETY: we hold the endpoint cap at EP_CAP.
+        // SAFETY: we hold the endpoint cap at EP_CAP; call sends the request and
+        // blocks for the reply (the clock value).
         unsafe {
-            sys_send(EP_CAP, 1);
-            sys_exit(0)
+            let t = sys_call(EP_CAP, 1);
+            sys_exit(t)
         }
     }
 
