@@ -20,6 +20,8 @@ pub type EndpointId = usize;
 pub enum Capability {
     /// Authority to `send` to / `recv` from the endpoint with this id.
     Endpoint(EndpointId),
+    /// Authority to `restart` the task in this scheduler slot (Phase 5b).
+    Restart(usize),
 }
 
 /// Look up capability `idx` in `caps`; if it is an endpoint capability,
@@ -28,6 +30,16 @@ pub enum Capability {
 pub fn cap_lookup(caps: &[Option<Capability>], idx: usize) -> Option<EndpointId> {
     match caps.get(idx) {
         Some(Some(Capability::Endpoint(id))) => Some(*id),
+        _ => None,
+    }
+}
+
+/// Look up capability `idx` in `caps`; if it is a restart capability, return
+/// its target scheduler slot. `None` if the index is out of range, the slot
+/// is empty, or the capability is the wrong type (e.g. an endpoint).
+pub fn restart_target(caps: &[Option<Capability>], idx: usize) -> Option<usize> {
+    match caps.get(idx) {
+        Some(Some(Capability::Restart(slot))) => Some(*slot),
         _ => None,
     }
 }
@@ -52,5 +64,26 @@ mod tests {
     fn rejects_an_out_of_range_index() {
         let caps = [Some(Capability::Endpoint(0))];
         assert_eq!(cap_lookup(&caps, 5), None);
+    }
+
+    #[test]
+    fn looks_up_a_granted_restart_target() {
+        let caps = [None, Some(Capability::Restart(4)), None];
+        assert_eq!(restart_target(&caps, 1), Some(4));
+    }
+
+    #[test]
+    fn restart_target_rejects_wrong_type_empty_and_oob() {
+        let caps = [Some(Capability::Endpoint(0)), None];
+        assert_eq!(restart_target(&caps, 0), None, "an Endpoint cap is not a Restart cap");
+        assert_eq!(restart_target(&caps, 1), None, "empty slot");
+        assert_eq!(restart_target(&caps, 9), None, "out of range");
+    }
+
+    #[test]
+    fn cap_lookup_rejects_a_restart_cap() {
+        // The endpoint lookup must not accept a Restart cap as an endpoint.
+        let caps = [Some(Capability::Restart(3))];
+        assert_eq!(cap_lookup(&caps, 0), None);
     }
 }
