@@ -36,6 +36,7 @@ Plain-language definitions of terms used throughout these docs. Aimed at someone
 - **Safety cage** — the rule that every automated self-healing action must be capability-checked, logged, reversible, and auditable, so the healer can never gain unchecked power.
 - **Playbook** — the ordered, reversible set of fix steps recorded for a known issue; what the self-healer applies (inside the safety cage) once a problem is diagnosed.
 - **Diagnosis (rule engine)** — the deterministic, explainable matching of an observed symptom (e.g. a fault cause) to a known issue — a transparent table lookup, never a black box. In this kernel it is `heal::diagnose`, which is why it is safe to run in the kernel itself.
+- **Launch generation** — the count of how many times a task has been (re)started, handed to the task by the kernel at launch (in `a0`). It lets a component tell a fresh start from a restart — e.g. so a transient fault can be retried into success.
 - **Accelerator (GPU / NPU / TPU / QPU)** — a specialized coprocessor a normal CPU offloads work to (graphics, AI math, or quantum operations). Treated as a *device*, not something an OS runs on.
 - **Trap** — the CPU's "stop and handle this" mechanism: on an exceptional event the hart jumps to the kernel's registered handler. Exceptions and interrupts are the two flavors.
 - **Exception** — a synchronous trap caused by the current instruction itself (e.g. a breakpoint or an illegal instruction).
