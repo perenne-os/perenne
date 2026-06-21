@@ -30,6 +30,8 @@ pub enum Syscall {
     Call,
     /// `reply(badge, data..)` — answer the caller the kernel recorded.
     Reply,
+    /// `getrandom(cap)` — draw 32 bytes from the kernel entropy pool.
+    Getrandom,
     /// An unrecognized syscall number (a user bug, not a kernel bug).
     Unknown(usize),
 }
@@ -45,6 +47,7 @@ pub fn decode_syscall(a7: usize) -> Syscall {
         6 => Syscall::Restart,
         7 => Syscall::Call,
         8 => Syscall::Reply,
+        9 => Syscall::Getrandom,
         n => Syscall::Unknown(n),
     }
 }
@@ -133,6 +136,11 @@ mod tests {
         assert_eq!(decode_syscall(7), Syscall::Call);
         assert_eq!(decode_syscall(8), Syscall::Reply);
     }
+
+    #[test]
+    fn decodes_getrandom_syscall() {
+        assert_eq!(decode_syscall(9), Syscall::Getrandom);
+    }
 }
 
 /// What the trap handler should do after a syscall returns.
@@ -188,6 +196,10 @@ pub fn dispatch(frame: &mut crate::trap::TrapFrame) -> Outcome {
         }
         Syscall::Reply => {
             crate::sched::ipc_reply(frame);
+            Outcome::Resume
+        }
+        Syscall::Getrandom => {
+            crate::sched::getrandom(frame);
             Outcome::Resume
         }
         Syscall::Unknown(_) => {
