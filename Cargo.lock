@@ -109,6 +109,9 @@ dependencies = [
 [[package]]
 name = "kernel-arch-riscv64"
 version = "0.0.0"
+dependencies = [
+ "kernel-crypto",
+]
 
 [[package]]
 name = "kernel-common"

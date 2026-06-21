@@ -18,7 +18,7 @@ mod bare {
     use core::panic::PanicInfo;
 
     use kernel::GREETING;
-    use kernel_arch_riscv64::{cap::Capability, console, dt, mem, println, sched, task::Message, timer, trap, virtio};
+    use kernel_arch_riscv64::{cap::Capability, console, dt, entropy, mem, println, sched, task::Message, timer, trap, virtio};
     use kernel_common::PROJECT_NAME;
 
     /// Rust entry, called from the boot assembly with the arguments
@@ -611,23 +611,6 @@ mod bare {
         }
     }
 
-    /// The kernel entropy pool: a ChaCha20 CSPRNG seeded by the virtio-rng
-    /// component, serving entropy to kernel code on demand (reseedable). The
-    /// same single-hart cell primitive the scheduler/frame allocator use.
-    static ENTROPY_POOL: mem::SingleHartCell<kernel_crypto::EntropyPool> =
-        mem::SingleHartCell::new(kernel_crypto::EntropyPool::new());
-
-    /// Fold 32 bytes of device entropy into the pool (seeds on first call,
-    /// mixes after).
-    fn pool_reseed(bytes: [u8; 32]) {
-        ENTROPY_POOL.with(|p| p.reseed(bytes));
-    }
-
-    /// Draw a fresh 32-byte seed from the pool (the kernel seeds it first).
-    fn pool_next_seed() -> [u8; 32] {
-        ENTROPY_POOL.with(|p| p.next_seed())
-    }
-
     /// Rebuild a 32-byte ML-KEM seed from an IPC message (badge + 3 data words,
     /// each a little-endian `u64`).
     fn seed_from_message(m: &Message) -> [u8; 32] {
@@ -648,12 +631,12 @@ mod bare {
     extern "C" fn pqc_consumer() -> ! {
         // Seed the pool from the first device draw.
         let d1 = sched::recv_message(ENTROPY_CAP);
-        pool_reseed(seed_from_message(&d1));
+        entropy::reseed(seed_from_message(&d1));
         println!("entropy: pool seeded from virtio-rng");
 
         // The pool serves entropy on demand: one device seed yields a stream.
-        let a = pool_next_seed();
-        let b = pool_next_seed();
+        let a = entropy::next_seed();
+        let b = entropy::next_seed();
         if a != b {
             println!("entropy: pool serves on demand (draws differ)");
         } else {
@@ -662,11 +645,11 @@ mod bare {
 
         // Fold a second device draw in — reseeding mixes new entropy with state.
         let d2 = sched::recv_message(ENTROPY_CAP);
-        pool_reseed(seed_from_message(&d2));
+        entropy::reseed(seed_from_message(&d2));
         println!("entropy: pool reseeded from virtio-rng");
 
         // Key ML-KEM from a pool draw (not the raw device bytes).
-        let seed = pool_next_seed();
+        let seed = entropy::next_seed();
         match kernel_crypto::ml_kem768_agree(seed) {
             Some(_) => println!("pqc: ML-KEM-768 round-trip ok (pool-seeded)"),
             None => println!("pqc: ML-KEM-768 FAIL (secrets disagreed)"),
