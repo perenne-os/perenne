@@ -207,6 +207,36 @@ pub fn build_user_space(stack: (usize, usize), device: (usize, usize)) -> usize 
     }
 }
 
+/// Like [`build_user_space`], but for a virtio component: maps the device's
+/// MMIO register page **and** a DMA region **RW-U, identity** (VA=PA) into the
+/// component, in addition to `.user_text` (R-X-U) and the `stack` (RW-U). The
+/// device DMAs to the physical addresses the component writes into
+/// descriptors, so VA must equal PA — both regions are identity-mapped, and
+/// mapped only here (the component's exclusive device capability). All three
+/// region tuples are half-open `(start, end)`, page-aligned.
+#[cfg(target_arch = "riscv64")]
+pub fn build_virtio_space(
+    stack: (usize, usize),
+    mmio: (usize, usize),
+    dma: (usize, usize),
+) -> usize {
+    use paging::{PTE_R, PTE_U, PTE_W, PTE_X};
+    // SAFETY: as in build_user_space — fresh zeroed root, valid page-aligned
+    // ranges, built on the master satp. MMIO + DMA are RW-U (the device
+    // registers are written; the DMA rings are read/written by both sides).
+    unsafe {
+        let root = frame::alloc_zeroed()
+            .expect("no frame for virtio component root page table")
+            .0 as *mut paging::PageTable;
+        map_kernel_sections(root);
+        paging::map_range(root, sym!(__user_text_start), sym!(__user_text_end), PTE_R | PTE_X | PTE_U);
+        paging::map_range(root, stack.0, stack.1, PTE_R | PTE_W | PTE_U);
+        paging::map_range(root, mmio.0, mmio.1, PTE_R | PTE_W | PTE_U);
+        paging::map_range(root, dma.0, dma.1, PTE_R | PTE_W | PTE_U);
+        paging::make_satp(root as usize)
+    }
+}
+
 /// Frames currently free (for boot diagnostics).
 #[cfg(target_arch = "riscv64")]
 pub fn free_frames() -> usize {
