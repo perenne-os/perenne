@@ -196,9 +196,20 @@ the substrate the self-healer (Phase 5) runs on.
   serving distinct on-demand draws, reseeded, and keying the ML-KEM round-trip.
   QEMU-only.
 
-(Next candidates: a capability-gated U-mode `getrandom` service over the pool;
-an interrupt-driven (PLIC) device path; one-shot reply capabilities for
-deferred/forwarded replies.)
+### U-mode getrandom service  *(done — 2026-06-21)*
+
+- **Goal:** let U-mode components draw from the kernel entropy pool, gated by a
+  capability.
+- **You learn:** a kernel-owned CSPRNG is exposed to user space as a syscall
+  (it can't run unprivileged), and a capability can gate an ordinary syscall —
+  the same unforgeable-index check IPC uses (see
+  [learning note 0019](../learning/0019-getrandom-service.md)).
+- **Done when:** `./tools/test-qemu.ps1` shows a component refused without the
+  capability and served with it. QEMU-only.
+
+(Next candidates: an interrupt-driven (PLIC) device path; one-shot reply
+capabilities for deferred/forwarded replies; richer self-healing once a
+filesystem exists.)
 
 ## Phase 5 — Self-healing seed
 
