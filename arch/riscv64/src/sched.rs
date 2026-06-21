@@ -19,6 +19,9 @@ use crate::task::{Message, IpcRole, CAP_SLOTS};
 // The IPC rendezvous looks up endpoint capabilities.
 #[cfg(target_arch = "riscv64")]
 use crate::cap::{cap_lookup, EndpointId};
+// `spawn_user` records relaunch info so a crashed component can be re-forged.
+#[cfg(target_arch = "riscv64")]
+use crate::task::Relaunch;
 
 /// Maximum concurrent tasks: the 3b-i demo runs five (idle + four U-mode
 /// tasks) plus one slot of headroom.
@@ -161,6 +164,9 @@ pub fn spawn(name: &'static str, entry: extern "C" fn() -> !, stack_top: usize) 
             satp: crate::mem::kernel_satp(),
             caps: [None; CAP_SLOTS],
             message: Message::EMPTY,
+            relaunch: None,
+            restarts: 0,
+            crash_badge: 0,
         });
         slot
     })
@@ -324,6 +330,7 @@ pub fn spawn_user(
             user_sp,
             kstack_top,
             crate::task::user_sstatus(crate::csr::sstatus_read()),
+            0, // first launch: generation 0
         );
         s.tasks[slot] = Some(Task {
             context,
@@ -333,6 +340,9 @@ pub fn spawn_user(
             satp,
             caps: [None; CAP_SLOTS],
             message: Message::EMPTY,
+            relaunch: Some(Relaunch { entry: entry as *const () as usize, user_sp }),
+            restarts: 0,
+            crash_badge: 0,
         });
         slot
     })
@@ -565,6 +575,9 @@ mod tests {
             satp: 0,
             caps: [None; CAP_SLOTS],
             message: Message::EMPTY,
+            relaunch: None,
+            restarts: 0,
+            crash_badge: 0,
         }
     }
 
