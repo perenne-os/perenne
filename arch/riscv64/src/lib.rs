@@ -63,6 +63,10 @@ pub mod virtio;
 #[cfg(target_arch = "riscv64")]
 pub mod entropy;
 
+/// The PLIC interrupt controller: pure offset arithmetic (host-tested) + the
+/// gated claim/complete/enable driver for the kernel's external interrupts.
+pub mod plic;
+
 /// The architecture identifier this crate targets.
 pub const ARCH: &str = "riscv64";
 

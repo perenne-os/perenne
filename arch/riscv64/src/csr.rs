@@ -42,6 +42,15 @@ pub unsafe fn sie_enable_timer() {
     unsafe { asm!("csrs sie, {}", in(reg) 1usize << 5, options(nostack, nomem)) };
 }
 
+/// Enable supervisor external interrupts (`sie.SEIE`, bit 9).
+///
+/// # Safety
+/// Only call once a trap handler and the PLIC are set up to service them.
+#[inline]
+pub unsafe fn sie_enable_external() {
+    unsafe { asm!("csrs sie, {}", in(reg) 1usize << 9, options(nostack, nomem)) };
+}
+
 /// Globally enable supervisor interrupts (`sstatus.SIE`, bit 1).
 ///
 /// # Safety
