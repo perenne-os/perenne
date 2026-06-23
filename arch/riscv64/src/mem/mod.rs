@@ -63,6 +63,13 @@ static KERNEL_SATP: AtomicUsize = AtomicUsize::new(0);
 #[cfg(target_arch = "riscv64")]
 static UART_MMIO_BASE: AtomicUsize = AtomicUsize::new(0);
 
+/// MMIO base of the PLIC (from the device tree), saved by [`init`] so
+/// [`map_kernel_sections`] maps its pages into the master table and every
+/// per-task tree — the external interrupt handler touches the PLIC while a
+/// user task's `satp` is active. Zero before `init`.
+#[cfg(target_arch = "riscv64")]
+static PLIC_MMIO_BASE: AtomicUsize = AtomicUsize::new(0);
+
 #[cfg(target_arch = "riscv64")]
 extern "C" {
     static __text_start: u8;
@@ -122,6 +129,13 @@ unsafe fn map_kernel_sections(root: *mut paging::PageTable) {
         if uart != 0 {
             paging::map_range(root, uart, uart + paging::PAGE_SIZE, PTE_R | PTE_W | PTE_G);
         }
+        // The PLIC: priority/pending/enable around the base (3 pages) and the
+        // context-1 threshold/claim page. R-W-G, kernel-only, in every tree.
+        let plic = PLIC_MMIO_BASE.load(Ordering::Acquire);
+        if plic != 0 {
+            paging::map_range(root, plic, plic + 0x3000, PTE_R | PTE_W | PTE_G);
+            paging::map_range(root, plic + 0x20_1000, plic + 0x20_2000, PTE_R | PTE_W | PTE_G);
+        }
     }
 }
 
@@ -139,7 +153,7 @@ unsafe fn map_kernel_sections(root: *mut paging::PageTable) {
 /// fault loudly, not hang) and before `timer::start()` (no interrupts
 /// while the world is being remapped).
 #[cfg(target_arch = "riscv64")]
-pub fn init(ram_end: usize, uart_base: usize) {
+pub fn init(ram_end: usize, uart_base: usize, plic_base: usize) {
     use paging::{PTE_G, PTE_R, PTE_W};
 
     // SAFETY: all sym! calls read linker-script symbol addresses (not
@@ -151,6 +165,7 @@ pub fn init(ram_end: usize, uart_base: usize) {
         // map_kernel_sections maps its page into the master table (and,
         // later, every per-task tree built by build_user_space).
         UART_MMIO_BASE.store(uart_base, Ordering::Release);
+        PLIC_MMIO_BASE.store(plic_base, Ordering::Release);
 
         let free_ram = (sym!(__kernel_end), ram_end);
         frame::ALLOCATOR.with(|a| a.init(free_ram.0, free_ram.1));

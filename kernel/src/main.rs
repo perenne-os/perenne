@@ -58,7 +58,7 @@ mod bare {
         // SAFETY: the discovered virtio-mmio bases address real register pages.
         let rng_base = unsafe { virtio::find_rng(&machine.virtio_mmio[..machine.virtio_mmio_count]) };
 
-        mem::init(machine.ram_base + machine.ram_size, machine.uart_base);
+        mem::init(machine.ram_base + machine.ram_size, machine.uart_base, machine.plic_base);
         println!(
             "paging: sv39 on ({} of {} frames free)",
             mem::free_frames(),
