@@ -18,6 +18,10 @@ pub struct MachineInfo {
     /// Bases of the `virtio,mmio` transport slots (QEMU `virt` exposes 8).
     pub virtio_mmio: [usize; 8],
     pub virtio_mmio_count: usize,
+    /// Each virtio-mmio slot's IRQ (`interrupts`), parallel to `virtio_mmio`.
+    pub virtio_mmio_irq: [u32; 8],
+    /// The PLIC base (`riscv,plic0` node's `reg`).
+    pub plic_base: usize,
 }
 
 const FDT_MAGIC: u32 = 0xd00d_feed;
@@ -87,6 +91,10 @@ pub fn parse(dtb: &[u8]) -> Option<MachineInfo> {
     let mut node_is_virtio = false;
     let mut virtio_mmio = [0usize; 8];
     let mut virtio_count = 0usize;
+    let mut virtio_mmio_irq = [0u32; 8];
+    let mut node_virtio_irq: Option<u32> = None;
+    let mut node_is_plic = false;
+    let mut plic_base: usize = 0;
 
     loop {
         let tok = be_u32(dtb, pos)?;
@@ -104,6 +112,8 @@ pub fn parse(dtb: &[u8]) -> Option<MachineInfo> {
                 node_shift = 0;
                 node_is_rtc = false;
                 node_is_virtio = false;
+                node_virtio_irq = None;
+                node_is_plic = false;
                 pos = (pos + name_len + 1 + 3) & !3; // past name + NUL, 4-pad
             }
             FDT_END_NODE => {
@@ -121,8 +131,14 @@ pub fn parse(dtb: &[u8]) -> Option<MachineInfo> {
                     if let Some(b) = node_reg {
                         if virtio_count < virtio_mmio.len() {
                             virtio_mmio[virtio_count] = b;
+                            virtio_mmio_irq[virtio_count] = node_virtio_irq.unwrap_or(0);
                             virtio_count += 1;
                         }
+                    }
+                }
+                if node_is_plic {
+                    if let Some(b) = node_reg {
+                        plic_base = b;
                     }
                 }
                 depth = depth.checked_sub(1)?;
@@ -165,6 +181,12 @@ pub fn parse(dtb: &[u8]) -> Option<MachineInfo> {
                 if pname == b"compatible" && val.windows(11).any(|w| w == b"virtio,mmio") {
                     node_is_virtio = true;
                 }
+                if pname == b"interrupts" && len >= 4 {
+                    node_virtio_irq = Some(be_u32(val, 0)?);
+                }
+                if pname == b"compatible" && val.windows(11).any(|w| w == b"riscv,plic0") {
+                    node_is_plic = true;
+                }
                 if pname == b"reg-shift" && len >= 4 {
                     node_shift = be_u32(val, 0)?;
                 }
@@ -186,6 +208,8 @@ pub fn parse(dtb: &[u8]) -> Option<MachineInfo> {
         rtc_base: rtc?,
         virtio_mmio,
         virtio_mmio_count: virtio_count,
+        virtio_mmio_irq,
+        plic_base,
     })
 }
 
@@ -224,6 +248,8 @@ mod tests {
         assert_eq!(mi.virtio_mmio_count, 8, "QEMU virt has 8 virtio-mmio slots");
         assert!(mi.virtio_mmio[..mi.virtio_mmio_count].contains(&0x1000_1000), "lowest slot");
         assert!(mi.virtio_mmio[..mi.virtio_mmio_count].contains(&0x1000_8000), "highest slot (where -device attaches)");
+        assert_eq!(mi.plic_base, 0x0c00_0000, "PLIC base");
+        assert!(mi.virtio_mmio_irq[..mi.virtio_mmio_count].contains(&8), "the 0x10008000 slot is IRQ 8");
     }
 
     #[test]

@@ -52,6 +52,12 @@ pub fn is_rng(device_id: u32) -> bool {
     device_id == DEVICE_ID_RNG
 }
 
+/// Map a discovered virtio-mmio base to its IRQ, using the parallel base/irq
+/// arrays from the device tree. `None` if the base is not among them.
+pub fn irq_for_base(bases: &[usize], irqs: &[u32], base: usize) -> Option<u32> {
+    bases.iter().position(|&b| b == base).and_then(|i| irqs.get(i).copied())
+}
+
 /// Probe `bases` (the discovered virtio-mmio slots) for the RNG: the first
 /// slot whose Magic is "virt" and DeviceID is 4. Called once in early boot
 /// (MMU off), like reading the device tree.
@@ -80,6 +86,14 @@ mod tests {
         assert!(is_rng(4));
         assert!(!is_rng(0)); // empty slot
         assert!(!is_rng(2)); // block device
+    }
+
+    #[test]
+    fn irq_for_base_maps_a_slot_to_its_irq() {
+        let bases = [0x1000_1000usize, 0x1000_8000];
+        let irqs = [1u32, 8];
+        assert_eq!(irq_for_base(&bases, &irqs, 0x1000_8000), Some(8));
+        assert_eq!(irq_for_base(&bases, &irqs, 0xdead), None);
     }
 
     #[test]
