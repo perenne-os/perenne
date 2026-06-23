@@ -49,6 +49,8 @@ pub enum Cause {
     StorePageFault,
     /// `ecall` executed from U-mode (exception code 8) — a syscall.
     UserEcall,
+    /// Supervisor external interrupt (interrupt code 9) — a device IRQ via the PLIC.
+    SupervisorExternal,
     /// Anything we don't handle yet.
     Unknown { interrupt: bool, code: usize },
 }
@@ -64,6 +66,7 @@ pub fn decode(scause: usize) -> Cause {
     match (interrupt, code) {
         (false, 3) => Cause::Breakpoint,
         (true, 5) => Cause::SupervisorTimer,
+        (true, 9) => Cause::SupervisorExternal,
         (false, 12) => Cause::InstructionPageFault,
         (false, 13) => Cause::LoadPageFault,
         (false, 15) => Cause::StorePageFault,
@@ -104,11 +107,16 @@ mod tests {
 
     #[test]
     fn unknown_interrupt_keeps_interrupt_flag() {
-        // Interrupt code 9 = supervisor external; unhandled in 2a.
+        // Interrupt code 1 = supervisor software interrupt; unhandled.
         assert_eq!(
-            decode(INTERRUPT_BIT | 9),
-            Cause::Unknown { interrupt: true, code: 9 }
+            decode(INTERRUPT_BIT | 1),
+            Cause::Unknown { interrupt: true, code: 1 }
         );
+    }
+
+    #[test]
+    fn decodes_supervisor_external_interrupt() {
+        assert_eq!(decode(INTERRUPT_BIT | 9), Cause::SupervisorExternal);
     }
 
     #[test]
@@ -292,6 +300,11 @@ static EXPECTING_WX_FAULT: AtomicBool = AtomicBool::new(false);
 #[cfg(target_arch = "riscv64")]
 static USER_PREEMPTED: AtomicBool = AtomicBool::new(false);
 
+/// One-shot: log the first external interrupt that wakes a waiting driver
+/// (the smoke test greps for it).
+#[cfg(target_arch = "riscv64")]
+static EXTERNAL_IRQ_LOGGED: AtomicBool = AtomicBool::new(false);
+
 /// Arm the W^X probe: the next store page fault is expected and will be
 /// reported and skipped instead of panicking.
 #[cfg(target_arch = "riscv64")]
@@ -381,6 +394,20 @@ extern "C" fn trap_handler(frame: &mut TrapFrame) {
             }
             // Tick-policy hook: preempt the running task.
             crate::sched::preempt();
+        }
+        Cause::SupervisorExternal => {
+            let irq = crate::plic::claim();
+            if irq != 0 {
+                // Mask the source: the device line stays asserted until the
+                // U-mode driver acks it, so leaving it enabled would storm.
+                crate::plic::disable(irq);
+                if let Some(name) = crate::sched::wake_irq(irq) {
+                    if !EXTERNAL_IRQ_LOGGED.swap(true, Ordering::AcqRel) {
+                        crate::println!("irq: external IRQ {irq} woke '{name}'");
+                    }
+                }
+                crate::plic::complete(irq);
+            }
         }
         Cause::UserEcall => {
             // A syscall from U-mode. ecall does not advance the PC, so for
