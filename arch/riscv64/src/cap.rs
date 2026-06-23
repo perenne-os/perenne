@@ -24,6 +24,8 @@ pub enum Capability {
     Restart(usize),
     /// Authority to call `getrandom` — draw from the kernel entropy pool.
     Randomness,
+    /// Authority to `wait_irq` on this IRQ number (a device's interrupt).
+    Interrupt(u32),
 }
 
 /// Look up capability `idx` in `caps`; if it is an endpoint capability,
@@ -51,6 +53,15 @@ pub fn restart_target(caps: &[Option<Capability>], idx: usize) -> Option<usize> 
 /// out-of-range index, or the wrong capability type.
 pub fn has_randomness(caps: &[Option<Capability>], idx: usize) -> bool {
     matches!(caps.get(idx), Some(Some(Capability::Randomness)))
+}
+
+/// Return the IRQ an `Interrupt` capability at `idx` authorizes waiting on.
+/// `None` for an empty slot, an out-of-range index, or the wrong cap type.
+pub fn interrupt_irq(caps: &[Option<Capability>], idx: usize) -> Option<u32> {
+    match caps.get(idx) {
+        Some(Some(Capability::Interrupt(irq))) => Some(*irq),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -96,6 +107,15 @@ mod tests {
         assert!(!has_randomness(&caps, 2), "an Endpoint cap is not Randomness");
         assert!(!has_randomness(&caps, 0), "empty slot");
         assert!(!has_randomness(&caps, 9), "out of range");
+    }
+
+    #[test]
+    fn interrupt_irq_returns_the_irq() {
+        let caps = [None, Some(Capability::Interrupt(8)), Some(Capability::Randomness)];
+        assert_eq!(interrupt_irq(&caps, 1), Some(8));
+        assert_eq!(interrupt_irq(&caps, 2), None, "Randomness is not an Interrupt cap");
+        assert_eq!(interrupt_irq(&caps, 0), None, "empty slot");
+        assert_eq!(interrupt_irq(&caps, 9), None, "out of range");
     }
 
     #[test]
