@@ -396,17 +396,18 @@ extern "C" fn trap_handler(frame: &mut TrapFrame) {
             crate::sched::preempt();
         }
         Cause::SupervisorExternal => {
+            // Claim the IRQ and wake its waiting driver. We deliberately do NOT
+            // complete here: claiming puts the source "in service" (masked from
+            // re-delivery) until the U-mode driver acks the device and calls
+            // `wait_irq`, which completes it. The source stays enabled at the
+            // PLIC the whole time.
             let irq = crate::plic::claim();
             if irq != 0 {
-                // Mask the source: the device line stays asserted until the
-                // U-mode driver acks it, so leaving it enabled would storm.
-                crate::plic::disable(irq);
                 if let Some(name) = crate::sched::wake_irq(irq) {
                     if !EXTERNAL_IRQ_LOGGED.swap(true, Ordering::AcqRel) {
                         crate::println!("irq: external IRQ {irq} woke '{name}'");
                     }
                 }
-                crate::plic::complete(irq);
             }
         }
         Cause::UserEcall => {

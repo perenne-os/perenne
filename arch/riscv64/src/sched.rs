@@ -890,7 +890,14 @@ pub fn wait_irq(frame: &mut crate::trap::TrapFrame) {
     match irq {
         None => frame.regs[9] = usize::MAX,
         Some(irq) => {
-            crate::plic::enable(irq);
+            // Complete the previous claim (the handler claims but does not
+            // complete — claim's "in service" state masks re-delivery while the
+            // U-mode driver acks the device). Completing here re-arms the source;
+            // the source stays enabled at the PLIC throughout (QEMU only asserts
+            // SEIP on the rising edge of an *enabled* source, so we never unmask
+            // after the device has already asserted). The first call completes
+            // nothing (harmless).
+            crate::plic::complete(irq);
             park_current(TaskState::WaitingIrq(irq));
             frame.regs[9] = 0; // woken by the interrupt handler
         }
