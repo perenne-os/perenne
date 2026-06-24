@@ -41,6 +41,15 @@ pub const STATUS_FEATURES_OK: u32 = 8;
 /// (DeviceFeaturesSel = 1).
 pub const F_VERSION_1_HI: u32 = 1;
 pub const VIRTQ_DESC_F_WRITE: u16 = 2;
+pub const VIRTQ_DESC_F_NEXT: u16 = 1;
+pub const DEVICE_ID_BLK: u32 = 2;
+pub const BLK_T_IN: u32 = 0; // read (device writes the data buffer)
+pub const BLK_T_OUT: u32 = 1; // write (device reads the data buffer)
+pub const BLK_SECTOR_SIZE: usize = 512;
+/// virtio-blk request buffers within the DMA frame (after the rings).
+pub const BLK_HDR_OFF: usize = 256; // 16-byte header
+pub const BLK_DATA_OFF: usize = 512; // 512-byte sector data
+pub const BLK_STATUS_OFF: usize = 1024; // 1-byte status
 
 // --- split-virtqueue + DMA layout within one zeroed 4 KiB frame (QSIZE=8) ---
 pub const VQ_SIZE: u32 = 8;
@@ -60,18 +69,18 @@ pub fn irq_for_base(bases: &[usize], irqs: &[u32], base: usize) -> Option<u32> {
     bases.iter().position(|&b| b == base).and_then(|i| irqs.get(i).copied())
 }
 
-/// Probe `bases` (the discovered virtio-mmio slots) for the RNG: the first
-/// slot whose Magic is "virt" and DeviceID is 4. Called once in early boot
-/// (MMU off), like reading the device tree.
+/// Probe `bases` (the discovered virtio-mmio slots) for the first device with
+/// the given DeviceID (e.g. 4 = rng, 2 = block). Called in early boot (MMU
+/// off), like reading the device tree.
 ///
 /// # Safety
 /// Each non-zero base must address a valid virtio-mmio register page.
 #[cfg(target_arch = "riscv64")]
-pub unsafe fn find_rng(bases: &[usize]) -> Option<usize> {
+pub unsafe fn find_device(bases: &[usize], device_id: u32) -> Option<usize> {
     for &b in bases {
         if b != 0
             && core::ptr::read_volatile((b + MAGIC) as *const u32) == MAGIC_VALUE
-            && core::ptr::read_volatile((b + DEVICE_ID) as *const u32) == DEVICE_ID_RNG
+            && core::ptr::read_volatile((b + DEVICE_ID) as *const u32) == device_id
         {
             return Some(b);
         }
@@ -96,6 +105,15 @@ mod tests {
         let irqs = [1u32, 8];
         assert_eq!(irq_for_base(&bases, &irqs, 0x1000_8000), Some(8));
         assert_eq!(irq_for_base(&bases, &irqs, 0xdead), None);
+    }
+
+    #[test]
+    fn blk_dma_layout_is_ordered_within_the_frame() {
+        assert!(BLK_HDR_OFF >= VQ_USED_OFF + 4 + 8 * VQ_SIZE as usize + 2, "header after the used ring");
+        assert!(BLK_DATA_OFF >= BLK_HDR_OFF + 16, "data after the 16-byte header");
+        assert!(BLK_STATUS_OFF >= BLK_DATA_OFF + BLK_SECTOR_SIZE, "status after the 512-byte data");
+        assert!(BLK_STATUS_OFF + 1 <= 4096, "status byte fits in the 4 KiB frame");
+        assert_eq!(DEVICE_ID_BLK, 2);
     }
 
     #[test]

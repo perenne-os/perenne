@@ -56,7 +56,7 @@ mod bare {
         // Discover the virtio-rng device before paging is on (direct physical
         // MMIO reads), like the device-tree read above.
         // SAFETY: the discovered virtio-mmio bases address real register pages.
-        let rng_base = unsafe { virtio::find_rng(&machine.virtio_mmio[..machine.virtio_mmio_count]) };
+        let rng_base = unsafe { virtio::find_device(&machine.virtio_mmio[..machine.virtio_mmio_count], virtio::DEVICE_ID_RNG) };
 
         mem::init(machine.ram_base + machine.ram_size, machine.uart_base, machine.plic_base);
         println!(
