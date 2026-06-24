@@ -168,6 +168,27 @@ mod bare {
             mem::build_user_space(nu, NO_DEVICE));
         sched::grant_cap(rnguser, RNG_CAP, Capability::Randomness);
 
+        // The deferrer demo: a server that holds two calls in flight and replies
+        // out of order (proves one-shot reply caps). Spawn the server before its
+        // clients so it recv-blocks first.
+        let du = ustack(core::ptr::addr_of!(US_DEFERRER) as usize);
+        let deferrer = sched::spawn_user("deferrer", deferrer_task, du.1,
+            core::ptr::addr_of!(KS_DEFERRER) as usize + TASK_STACK,
+            mem::build_user_space(du, NO_DEVICE));
+        sched::grant_cap(deferrer, DEFER_CAP, Capability::Endpoint(DEFER_EP));
+
+        let dau = ustack(core::ptr::addr_of!(US_DCLIENTA) as usize);
+        let dclient_a = sched::spawn_user("dclientA", dclient_a_task, dau.1,
+            core::ptr::addr_of!(KS_DCLIENTA) as usize + TASK_STACK,
+            mem::build_user_space(dau, NO_DEVICE));
+        sched::grant_cap(dclient_a, DEFER_CAP, Capability::Endpoint(DEFER_EP));
+
+        let dbu = ustack(core::ptr::addr_of!(US_DCLIENTB) as usize);
+        let dclient_b = sched::spawn_user("dclientB", dclient_b_task, dbu.1,
+            core::ptr::addr_of!(KS_DCLIENTB) as usize + TASK_STACK,
+            mem::build_user_space(dbu, NO_DEVICE));
+        sched::grant_cap(dclient_b, DEFER_CAP, Capability::Endpoint(DEFER_EP));
+
         sched::spawn("idle", idle, core::ptr::addr_of!(KS_IDLE) as usize + TASK_STACK);
 
         timer::init(machine.timebase_hz);
@@ -229,6 +250,9 @@ mod bare {
     const EP0: usize = 0;
     const EP_CAP: usize = 0;
 
+    /// The cap slot the RTC server lets the kernel mint its reply cap into.
+    const RTC_REPLY_SLOT: usize = 1;
+
     /// The healer's cap-table slot holding its `Endpoint(CRASH_EP)` capability
     /// (it `recv`s on this to learn of crashes). Restart caps live at slots
     /// 1.. so a crash notification's badge is directly the cap slot to use.
@@ -245,6 +269,11 @@ mod bare {
     /// The entropy component's cap slot holding its `Interrupt(rng_irq)` cap.
     const IRQ_CAP: usize = 1;
 
+    /// The endpoint the deferrer demo uses, and the cap slot the deferrer and
+    /// its clients hold it in.
+    const DEFER_EP: usize = 3;
+    const DEFER_CAP: usize = 0;
+
     /// Per-task kernel stack size (also the trap stack a U-mode task's
     /// traps land on). 16 KiB; per-task guard pages stay deferred.
     const TASK_STACK: usize = 16 * 1024;
@@ -257,6 +286,9 @@ mod bare {
     static mut KS_FLAKY: KStack = [0; TASK_STACK];
     static mut KS_ENTROPY: KStack = [0; TASK_STACK];
     static mut KS_RNGUSER: KStack = [0; TASK_STACK];
+    static mut KS_DEFERRER: KStack = [0; TASK_STACK];
+    static mut KS_DCLIENTA: KStack = [0; TASK_STACK];
+    static mut KS_DCLIENTB: KStack = [0; TASK_STACK];
     static mut KS_IDLE: KStack = [0; TASK_STACK];
 
     /// The PQC consumer runs ML-KEM-768, which in a debug build needs a much
@@ -287,6 +319,12 @@ mod bare {
     static mut US_ENTROPY: UStack = UStack([0; USER_STACK_SIZE]);
     #[link_section = ".user_data"]
     static mut US_RNGUSER: UStack = UStack([0; USER_STACK_SIZE]);
+    #[link_section = ".user_data"]
+    static mut US_DEFERRER: UStack = UStack([0; USER_STACK_SIZE]);
+    #[link_section = ".user_data"]
+    static mut US_DCLIENTA: UStack = UStack([0; USER_STACK_SIZE]);
+    #[link_section = ".user_data"]
+    static mut US_DCLIENTB: UStack = UStack([0; USER_STACK_SIZE]);
 
     /// Exit syscall (a7 = 2): a0 = code. Never returns.
     ///
@@ -348,20 +386,20 @@ mod bare {
         ret
     }
 
-    /// reply syscall (a7 = 8): a0 = badge, a1..a3 = data (zero here). Answers
-    /// the caller the kernel recorded. Returns 0, or `usize::MAX` if there is
-    /// no pending caller.
+    /// reply syscall (a7 = 8): a0 = reply-cap slot, a1 = badge, a2..a4 = data
+    /// (zero here). Wakes the caller named by the one-shot Reply cap and
+    /// consumes it. Returns 0, or `usize::MAX` if the slot holds no reply cap.
     ///
     /// # Safety
-    /// Always sound; the kernel routes the reply to the recorded caller.
+    /// Always sound; the kernel validates the reply capability.
     #[inline(always)]
-    unsafe fn sys_reply(badge: usize) -> usize {
+    unsafe fn sys_reply(reply_slot: usize, badge: usize) -> usize {
         let ret;
         core::arch::asm!(
             "ecall",
             in("a7") 8usize,
-            inout("a0") badge => ret,
-            in("a1") 0usize,
+            inout("a0") reply_slot => ret,
+            in("a1") badge,
             in("a2") 0usize,
             in("a3") 0usize,
             options(nostack),
@@ -413,21 +451,20 @@ mod bare {
         ret
     }
 
-    /// recv syscall (a7 = 5): a0 = cap index. Returns the badge in a0 (the
-    /// data words come back in a1..a3, unused here). Blocks until a sender
-    /// arrives.
+    /// recv syscall (a7 = 5): a0 = endpoint cap index, a1 = reply slot (where
+    /// the kernel installs a one-shot Reply cap if the message is a Call; for a
+    /// one-way Send it is unused). Returns the badge in a0.
     ///
     /// # Safety
-    /// Always sound; the kernel validates the capability and may block this
-    /// task until a sender arrives.
+    /// Always sound; the kernel validates the capability and may block us.
     #[inline(always)]
-    unsafe fn sys_recv(cap: usize) -> usize {
+    unsafe fn sys_recv(cap: usize, reply_slot: usize) -> usize {
         let badge;
         core::arch::asm!(
             "ecall",
             in("a7") 5usize,
             inout("a0") cap => badge,
-            out("a1") _,
+            inout("a1") reply_slot => _,
             out("a2") _,
             out("a3") _,
             options(nostack),
@@ -531,7 +568,7 @@ mod bare {
         loop {
             // SAFETY: we hold the endpoint cap at EP_CAP; recv blocks for a
             // request, and the kernel records the caller so our reply reaches it.
-            let _req = unsafe { sys_recv(EP_CAP) };
+            let _req = unsafe { sys_recv(EP_CAP, RTC_REPLY_SLOT) };
             let low: u32;
             let high: u32;
             // SAFETY: the goldfish RTC page is mapped R-U in our address space;
@@ -549,7 +586,7 @@ mod bare {
             let t = ((high as usize) << 32) | (low as usize);
             // SAFETY: reply the live clock to the caller; the client's `call`
             // returns it. Then loop to serve the next request.
-            unsafe { sys_reply(t) };
+            unsafe { sys_reply(RTC_REPLY_SLOT, t) };
         }
     }
 
@@ -768,7 +805,7 @@ mod bare {
             // SAFETY: we hold Endpoint(CRASH_EP) at CRASH_CAP; recv blocks
             // until the kernel reports a crash. The returned badge is the cap
             // index of the crashed component's Restart capability.
-            let cap_idx = unsafe { sys_recv(CRASH_CAP) };
+            let cap_idx = unsafe { sys_recv(CRASH_CAP, 0) };
             // SAFETY: ask the kernel to apply the playbook (a caged restart).
             unsafe { sys_restart(cap_idx) };
         }
@@ -806,6 +843,41 @@ mod bare {
         // Recovered (this is a restart): do our work and exit cleanly.
         // SAFETY: exit is always sound.
         unsafe { sys_exit(0) }
+    }
+
+    /// A server that holds two calls in flight and replies OUT OF ORDER, proving
+    /// one-shot reply capabilities. It receives a call into reply slot 1 and a
+    /// second into reply slot 2 (holding a Reply cap for each), then replies to
+    /// the second before the first. Each reply returns `request | 0x100`.
+    #[no_mangle]
+    #[link_section = ".user_text"]
+    extern "C" fn deferrer_task() -> ! {
+        // SAFETY: we hold the endpoint cap at DEFER_CAP; recv blocks for a call.
+        unsafe {
+            let a = sys_recv(DEFER_CAP, 1); // call A -> Reply cap in slot 1
+            let b = sys_recv(DEFER_CAP, 2); // call B -> Reply cap in slot 2
+            sys_reply(2, b | 0x100); // reply B first
+            sys_reply(1, a | 0x100); // then A
+            sys_exit(0)
+        }
+    }
+
+    /// A client of the deferrer: call with badge 0xa1, exit with the reply
+    /// (0x1a1 = 417) — proving its call was tracked independently of B's.
+    #[no_mangle]
+    #[link_section = ".user_text"]
+    extern "C" fn dclient_a_task() -> ! {
+        // SAFETY: we hold the endpoint cap at DEFER_CAP.
+        unsafe { sys_exit(sys_call(DEFER_CAP, 0xa1)) }
+    }
+
+    /// A client of the deferrer: call with badge 0xb1, exit with the reply
+    /// (0x1b1 = 433).
+    #[no_mangle]
+    #[link_section = ".user_text"]
+    extern "C" fn dclient_b_task() -> ! {
+        // SAFETY: we hold the endpoint cap at DEFER_CAP.
+        unsafe { sys_exit(sys_call(DEFER_CAP, 0xb1)) }
     }
 
     /// The idle kernel (S-mode) task: cooperatively yield when other tasks
