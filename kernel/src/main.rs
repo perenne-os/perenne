@@ -57,6 +57,7 @@ mod bare {
         // MMIO reads), like the device-tree read above.
         // SAFETY: the discovered virtio-mmio bases address real register pages.
         let rng_base = unsafe { virtio::find_device(&machine.virtio_mmio[..machine.virtio_mmio_count], virtio::DEVICE_ID_RNG) };
+        let blk_base = unsafe { virtio::find_device(&machine.virtio_mmio[..machine.virtio_mmio_count], virtio::DEVICE_ID_BLK) };
 
         mem::init(machine.ram_base + machine.ram_size, machine.uart_base, machine.plic_base);
         println!(
@@ -189,6 +190,36 @@ mod bare {
             mem::build_user_space(dbu, NO_DEVICE));
         sched::grant_cap(dclient_b, DEFER_CAP, Capability::Endpoint(DEFER_EP));
 
+        // Phase 6a — block storage: a user-space virtio-blk driver. The consumer
+        // (a kernel task) recv-blocks for the self-test result before the
+        // component reports.
+        if let Some(blk) = blk_base {
+            let dma_pa = mem::frame::alloc_zeroed().expect("no DMA frame for blk").0;
+            let blk_cons = sched::spawn("blkc", blk_consumer,
+                core::ptr::addr_of!(KS_BLKC) as usize + TASK_STACK);
+            sched::grant_cap(blk_cons, BLK_REPORT_CAP, Capability::Endpoint(BLK_EP));
+
+            let bu = ustack(core::ptr::addr_of!(US_BLK) as usize);
+            let blkdev = sched::spawn_user("blk", blk_component, bu.1,
+                core::ptr::addr_of!(KS_BLK) as usize + TASK_STACK,
+                mem::build_virtio_space(bu, (blk, blk + 0x1000), (dma_pa, dma_pa + 0x1000)));
+            sched::grant_cap(blkdev, BLK_REPORT_CAP, Capability::Endpoint(BLK_EP));
+
+            let n = machine.virtio_mmio_count;
+            let blk_irq = virtio::irq_for_base(&machine.virtio_mmio[..n], &machine.virtio_mmio_irq[..n], blk)
+                .expect("blk has no IRQ in the device tree");
+            sched::grant_cap(blkdev, BLK_IRQ_CAP, Capability::Interrupt(blk_irq));
+            sched::set_launch_args(blkdev, blk, dma_pa);
+            // PLIC setup (idempotent if the rng path already did init + sie).
+            plic::init(machine.plic_base);
+            plic::set_priority(blk_irq, 1);
+            plic::enable(blk_irq);
+            // SAFETY: the trap handler and the PLIC are set up to service it.
+            unsafe { csr::sie_enable_external() };
+        } else {
+            println!("blk: no virtio-blk device found");
+        }
+
         sched::spawn("idle", idle, core::ptr::addr_of!(KS_IDLE) as usize + TASK_STACK);
 
         timer::init(machine.timebase_hz);
@@ -274,6 +305,12 @@ mod bare {
     const DEFER_EP: usize = 3;
     const DEFER_CAP: usize = 0;
 
+    /// The endpoint the blk component reports its self-test result on; the cap
+    /// slot it (and the consumer) hold it in; and the slot of its Interrupt cap.
+    const BLK_EP: usize = 4;
+    const BLK_REPORT_CAP: usize = 0;
+    const BLK_IRQ_CAP: usize = 1;
+
     /// Per-task kernel stack size (also the trap stack a U-mode task's
     /// traps land on). 16 KiB; per-task guard pages stay deferred.
     const TASK_STACK: usize = 16 * 1024;
@@ -289,6 +326,8 @@ mod bare {
     static mut KS_DEFERRER: KStack = [0; TASK_STACK];
     static mut KS_DCLIENTA: KStack = [0; TASK_STACK];
     static mut KS_DCLIENTB: KStack = [0; TASK_STACK];
+    static mut KS_BLK: KStack = [0; TASK_STACK];
+    static mut KS_BLKC: KStack = [0; TASK_STACK];
     static mut KS_IDLE: KStack = [0; TASK_STACK];
 
     /// The PQC consumer runs ML-KEM-768, which in a debug build needs a much
@@ -325,6 +364,8 @@ mod bare {
     static mut US_DCLIENTA: UStack = UStack([0; USER_STACK_SIZE]);
     #[link_section = ".user_data"]
     static mut US_DCLIENTB: UStack = UStack([0; USER_STACK_SIZE]);
+    #[link_section = ".user_data"]
+    static mut US_BLK: UStack = UStack([0; USER_STACK_SIZE]);
 
     /// Exit syscall (a7 = 2): a0 = code. Never returns.
     ///
@@ -547,6 +588,93 @@ mod bare {
     #[inline(always)]
     unsafe fn dma_fence() {
         core::arch::asm!("fence", options(nostack));
+    }
+    #[inline(always)]
+    unsafe fn dma_w8(addr: usize, v: u8) {
+        core::arch::asm!("sb {v}, 0({a})", v = in(reg) v, a = in(reg) addr, options(nostack));
+    }
+    #[inline(always)]
+    unsafe fn dma_r8(addr: usize) -> u8 {
+        let v;
+        core::arch::asm!("lbu {v}, 0({a})", v = out(reg) v, a = in(reg) addr, options(nostack));
+        v
+    }
+
+    /// The virtio-mmio v2 status handshake + queue-0 setup (identical for every
+    /// modern virtio device). `dma` is the identity-mapped frame holding the
+    /// rings. Spike-verified against virtio-rng and virtio-blk.
+    #[inline(always)]
+    unsafe fn virtio_queue_init(mmio: usize, dma: usize) {
+        let desc = dma + virtio::VQ_DESC_OFF;
+        let avail = dma + virtio::VQ_AVAIL_OFF;
+        let used = dma + virtio::VQ_USED_OFF;
+        mmio_w(mmio, virtio::STATUS, 0);
+        mmio_w(mmio, virtio::STATUS, virtio::STATUS_ACK);
+        mmio_w(mmio, virtio::STATUS, virtio::STATUS_ACK | virtio::STATUS_DRIVER);
+        mmio_w(mmio, virtio::DEVICE_FEATURES_SEL, 1);
+        let fhi = mmio_r(mmio, virtio::DEVICE_FEATURES);
+        mmio_w(mmio, virtio::DRIVER_FEATURES_SEL, 1);
+        mmio_w(mmio, virtio::DRIVER_FEATURES, fhi & virtio::F_VERSION_1_HI);
+        mmio_w(mmio, virtio::DRIVER_FEATURES_SEL, 0);
+        mmio_w(mmio, virtio::DRIVER_FEATURES, 0);
+        mmio_w(mmio, virtio::STATUS,
+            virtio::STATUS_ACK | virtio::STATUS_DRIVER | virtio::STATUS_FEATURES_OK);
+        mmio_w(mmio, virtio::QUEUE_SEL, 0);
+        mmio_w(mmio, virtio::QUEUE_NUM, virtio::VQ_SIZE);
+        mmio_w(mmio, virtio::QUEUE_DESC_LOW, desc as u32);
+        mmio_w(mmio, virtio::QUEUE_DESC_HIGH, (desc >> 32) as u32);
+        mmio_w(mmio, virtio::QUEUE_DRIVER_LOW, avail as u32);
+        mmio_w(mmio, virtio::QUEUE_DRIVER_HIGH, (avail >> 32) as u32);
+        mmio_w(mmio, virtio::QUEUE_DEVICE_LOW, used as u32);
+        mmio_w(mmio, virtio::QUEUE_DEVICE_HIGH, (used >> 32) as u32);
+        mmio_w(mmio, virtio::QUEUE_READY, 1);
+        mmio_w(mmio, virtio::STATUS,
+            virtio::STATUS_ACK | virtio::STATUS_DRIVER | virtio::STATUS_FEATURES_OK | virtio::STATUS_DRIVER_OK);
+    }
+
+    /// Issue one virtio-blk request for sector 0 (`write` = T_OUT else T_IN),
+    /// publishing the 3-descriptor chain and blocking on the device IRQ.
+    /// Returns the device status byte (0 = OK). `avail_idx` is the current
+    /// available-ring index.
+    #[inline(always)]
+    unsafe fn blk_req(mmio: usize, dma: usize, write: bool, avail_idx: u16) -> u8 {
+        let desc = dma + virtio::VQ_DESC_OFF;
+        let avail = dma + virtio::VQ_AVAIL_OFF;
+        let hdr = dma + virtio::BLK_HDR_OFF;
+        let data = dma + virtio::BLK_DATA_OFF;
+        let status = dma + virtio::BLK_STATUS_OFF;
+        // request header
+        dma_w32(hdr, if write { virtio::BLK_T_OUT } else { virtio::BLK_T_IN });
+        dma_w32(hdr + 4, 0);
+        dma_w64(hdr + 8, 0); // sector 0
+        dma_w8(status, 0xff); // sentinel
+        // desc 0: header (device reads)
+        dma_w64(desc, hdr as u64);
+        dma_w32(desc + 8, 16);
+        dma_w16(desc + 12, virtio::VIRTQ_DESC_F_NEXT);
+        dma_w16(desc + 14, 1);
+        // desc 1: data (device WRITEs it on a read)
+        dma_w64(desc + 16, data as u64);
+        dma_w32(desc + 24, virtio::BLK_SECTOR_SIZE as u32);
+        let data_flags = virtio::VIRTQ_DESC_F_NEXT
+            | if write { 0 } else { virtio::VIRTQ_DESC_F_WRITE };
+        dma_w16(desc + 28, data_flags);
+        dma_w16(desc + 30, 2);
+        // desc 2: status (device WRITEs)
+        dma_w64(desc + 32, status as u64);
+        dma_w32(desc + 40, 1);
+        dma_w16(desc + 44, virtio::VIRTQ_DESC_F_WRITE);
+        dma_w16(desc + 46, 0);
+        // publish the head descriptor, notify, and wait for the interrupt
+        dma_w16(avail + 4 + (avail_idx as usize % virtio::VQ_SIZE as usize) * 2, 0);
+        dma_fence();
+        dma_w16(avail + 2, avail_idx + 1);
+        dma_fence();
+        mmio_w(mmio, virtio::QUEUE_NOTIFY, 0);
+        sys_wait_irq(BLK_IRQ_CAP);
+        let is = mmio_r(mmio, virtio::INTERRUPT_STATUS);
+        mmio_w(mmio, virtio::INTERRUPT_ACK, is);
+        dma_r8(status)
     }
 
     /// The RTC time server: a user-space driver that exclusively owns the
@@ -878,6 +1006,72 @@ mod bare {
     extern "C" fn dclient_b_task() -> ! {
         // SAFETY: we hold the endpoint cap at DEFER_CAP.
         unsafe { sys_exit(sys_call(DEFER_CAP, 0xb1)) }
+    }
+
+    /// The blk component (user-space virtio-blk driver). The kernel maps the
+    /// device's MMIO + a zeroed DMA frame into it (a1 = mmio, a2 = dma) and
+    /// grants an Interrupt cap for `wait_irq`. It self-tests a sector
+    /// round-trip: fill the data buffer with a pattern, WRITE sector 0, zero the
+    /// buffer, READ sector 0, and verify the pattern was restored. Reports the
+    /// result with a one-way send to the blk consumer.
+    #[no_mangle]
+    #[link_section = ".user_text"]
+    extern "C" fn blk_component() -> ! {
+        let mmio: usize;
+        let dma: usize;
+        // SAFETY: read the launch args the kernel placed in a1/a2.
+        unsafe {
+            core::arch::asm!("mv {m}, a1", "mv {d}, a2",
+                m = out(reg) mmio, d = out(reg) dma,
+                options(nomem, nostack, preserves_flags));
+        }
+        let data = dma + virtio::BLK_DATA_OFF;
+        // SAFETY: mmio + dma are mapped RW-U into this task; the sequence is the
+        // spike-verified virtio-blk bring-up.
+        unsafe {
+            virtio_queue_init(mmio, dma);
+            // Fill the data buffer with a known pattern and WRITE sector 0.
+            let mut i = 0;
+            while i < virtio::BLK_SECTOR_SIZE {
+                dma_w8(data + i, (i & 0xff) as u8);
+                i += 1;
+            }
+            let wst = blk_req(mmio, dma, true, 0);
+            // Zero the buffer, then READ sector 0 back into it.
+            i = 0;
+            while i < virtio::BLK_SECTOR_SIZE {
+                dma_w8(data + i, 0);
+                i += 1;
+            }
+            let rst = blk_req(mmio, dma, false, 1);
+            // Verify the pattern was restored (so both write and read hit disk).
+            let mut ok = wst == 0 && rst == 0;
+            i = 0;
+            while ok && i < virtio::BLK_SECTOR_SIZE {
+                if dma_r8(data + i) != (i & 0xff) as u8 {
+                    ok = false;
+                }
+                i += 1;
+            }
+            sys_send4(BLK_REPORT_CAP, if ok { 1 } else { 0 }, 0, 0, 0);
+            sys_exit(0)
+        }
+    }
+
+    /// The blk result consumer (kernel task): receives the blk component's
+    /// self-test result and prints it. Then idles (kernel tasks never return).
+    extern "C" fn blk_consumer() -> ! {
+        let m = sched::recv_message(BLK_REPORT_CAP);
+        if m.badge == 1 {
+            println!("blk: sector round-trip ok");
+        } else {
+            println!("blk: sector round-trip FAILED");
+        }
+        loop {
+            sched::yield_now();
+            // SAFETY: wait for the next interrupt between yields.
+            unsafe { core::arch::asm!("wfi") };
+        }
     }
 
     /// The idle kernel (S-mode) task: cooperatively yield when other tasks
