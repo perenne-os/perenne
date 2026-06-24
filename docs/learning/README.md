@@ -31,3 +31,4 @@ This folder holds the author's learning notes as systems-programming concepts cl
 - [0019 — getrandom: capability-gated entropy for U-mode](0019-getrandom-service.md)
 - [0020 — The first device interrupt (the PLIC)](0020-plic-interrupts.md)
 - [0021 — One-shot reply capabilities](0021-reply-capabilities.md)
+- [0022 — Block storage (virtio-blk)](0022-block-storage.md)

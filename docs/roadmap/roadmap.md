@@ -286,15 +286,17 @@ A single coherent arc, pursued as a phase (not one-off candidates), decomposed
 into three sub-phases — each its own design → plan → build cycle, each meatier
 than the recent increments:
 
-### Phase 6a — Block storage (virtio-blk)
+### Phase 6a — Block storage (virtio-blk)  *(done — 2026-06-24)*
 
 - **Goal:** a virtio-blk driver — read and write disk sectors over a virtqueue,
   reusing the virtio transport and the PLIC interrupt path. A QEMU `-drive`
   backs it.
-- **You learn:** block device I/O (request header + data + status descriptors),
-  and how the same virtqueue machinery serves a very different device.
+- **You learn:** block device I/O (a request is a *chain* — header + data +
+  status descriptors, the data descriptor's `WRITE` flag flipping with
+  direction), and how the same virtqueue machinery serves a very different
+  device (see [learning note 0022](../learning/0022-block-storage.md)).
 - **Done when:** `./tools/test-qemu.ps1` writes a sector and reads it back
-  (round-trip), interrupt-driven. QEMU-only.
+  (round-trip), interrupt-driven, through an unprivileged driver. QEMU-only.
 
 ### Phase 6b — A minimal filesystem
 
