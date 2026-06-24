@@ -860,6 +860,50 @@ pub fn getrandom(frame: &mut crate::trap::TrapFrame) {
     frame.regs[13] = word(24); // a4
 }
 
+/// Wake the task blocked in `wait_irq` for `irq` (set it `Ready`) and return
+/// its name (for logging). `None` if no task is waiting — the masked source
+/// stays pending and is redelivered at the next `wait_irq`.
+#[cfg(target_arch = "riscv64")]
+pub fn wake_irq(irq: u32) -> Option<&'static str> {
+    SCHED.with(|s| {
+        let want = TaskState::WaitingIrq(irq);
+        let pos = s
+            .tasks
+            .iter()
+            .position(|slot| slot.as_ref().is_some_and(|t| t.state == want))?;
+        s.tasks[pos].as_mut().unwrap().state = TaskState::Ready;
+        Some(s.tasks[pos].as_ref().unwrap().name)
+    })
+}
+
+/// Service a `wait_irq` syscall: if the caller holds an `Interrupt` capability
+/// at index `a0` (= `frame.regs[9]`), unmask that IRQ in the PLIC and block the
+/// task until the interrupt handler wakes it (`a0 = 0` on return). Otherwise
+/// `a0 = usize::MAX`. Runs in the trap handler with interrupts off, so the
+/// just-unmasked interrupt is delivered only after we have blocked.
+#[cfg(target_arch = "riscv64")]
+pub fn wait_irq(frame: &mut crate::trap::TrapFrame) {
+    let cap_idx = frame.regs[9];
+    let irq = SCHED.with(|s| {
+        crate::cap::interrupt_irq(&s.tasks[s.current].as_ref().unwrap().caps, cap_idx)
+    });
+    match irq {
+        None => frame.regs[9] = usize::MAX,
+        Some(irq) => {
+            // Complete the previous claim (the handler claims but does not
+            // complete — claim's "in service" state masks re-delivery while the
+            // U-mode driver acks the device). Completing here re-arms the source;
+            // the source stays enabled at the PLIC throughout (QEMU only asserts
+            // SEIP on the rising edge of an *enabled* source, so we never unmask
+            // after the device has already asserted). The first call completes
+            // nothing (harmless).
+            crate::plic::complete(irq);
+            park_current(TaskState::WaitingIrq(irq));
+            frame.regs[9] = 0; // woken by the interrupt handler
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

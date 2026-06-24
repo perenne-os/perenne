@@ -18,7 +18,7 @@ mod bare {
     use core::panic::PanicInfo;
 
     use kernel::GREETING;
-    use kernel_arch_riscv64::{cap::Capability, console, dt, entropy, mem, println, sched, task::Message, timer, trap, virtio};
+    use kernel_arch_riscv64::{cap::Capability, console, csr, dt, entropy, mem, plic, println, sched, task::Message, timer, trap, virtio};
     use kernel_common::PROJECT_NAME;
 
     /// Rust entry, called from the boot assembly with the arguments
@@ -58,7 +58,7 @@ mod bare {
         // SAFETY: the discovered virtio-mmio bases address real register pages.
         let rng_base = unsafe { virtio::find_rng(&machine.virtio_mmio[..machine.virtio_mmio_count]) };
 
-        mem::init(machine.ram_base + machine.ram_size, machine.uart_base);
+        mem::init(machine.ram_base + machine.ram_size, machine.uart_base, machine.plic_base);
         println!(
             "paging: sv39 on ({} of {} frames free)",
             mem::free_frames(),
@@ -138,6 +138,22 @@ mod bare {
                 mem::build_virtio_space(eu, (rng, rng + 0x1000), (dma_pa, dma_pa + 0x1000)));
             sched::grant_cap(entropy, ENTROPY_CAP, Capability::Endpoint(ENTROPY_EP));
             sched::set_launch_args(entropy, rng, dma_pa);
+
+            // Interrupt path: route the RNG's IRQ through the PLIC and grant the
+            // component the authority to wait on it (cap slot 1).
+            let n = machine.virtio_mmio_count;
+            let rng_irq = virtio::irq_for_base(&machine.virtio_mmio[..n], &machine.virtio_mmio_irq[..n], rng)
+                .expect("rng has no IRQ in the device tree");
+            plic::init(machine.plic_base);
+            plic::set_priority(rng_irq, 1);
+            // Enable the source now and leave it enabled: QEMU's PLIC only
+            // asserts SEIP on the rising edge of an enabled source, so the
+            // handler/wait_irq use claim's in-service state to mask, never the
+            // enable bit.
+            plic::enable(rng_irq);
+            // SAFETY: the trap handler and the PLIC are now set up to service it.
+            unsafe { csr::sie_enable_external() };
+            sched::grant_cap(entropy, IRQ_CAP, Capability::Interrupt(rng_irq));
         } else {
             println!("entropy: no virtio-rng device found");
         }
@@ -225,6 +241,9 @@ mod bare {
 
     /// The `rnguser` component's cap slot holding its `Randomness` capability.
     const RNG_CAP: usize = 0;
+
+    /// The entropy component's cap slot holding its `Interrupt(rng_irq)` cap.
+    const IRQ_CAP: usize = 1;
 
     /// Per-task kernel stack size (also the trap stack a U-mode task's
     /// traps land on). 16 KiB; per-task guard pages stay deferred.
@@ -376,6 +395,24 @@ mod bare {
         (status, [w0, w1, w2, w3])
     }
 
+    /// wait_irq syscall (a7 = 10): a0 = cap index of an Interrupt capability.
+    /// Blocks until the device interrupt fires; returns a0 = 0, or `usize::MAX`
+    /// if the caller lacks the capability.
+    ///
+    /// # Safety
+    /// Always sound; the kernel validates the capability and blocks us.
+    #[inline(always)]
+    unsafe fn sys_wait_irq(cap: usize) -> usize {
+        let ret;
+        core::arch::asm!(
+            "ecall",
+            in("a7") 10usize,
+            inout("a0") cap => ret,
+            options(nostack),
+        );
+        ret
+    }
+
     /// recv syscall (a7 = 5): a0 = cap index. Returns the badge in a0 (the
     /// data words come back in a1..a3, unused here). Blocks until a sender
     /// arrives.
@@ -468,12 +505,6 @@ mod bare {
     unsafe fn dma_r64(addr: usize) -> u64 {
         let v;
         core::arch::asm!("ld {v}, 0({a})", v = out(reg) v, a = in(reg) addr, options(nostack));
-        v
-    }
-    #[inline(always)]
-    unsafe fn dma_r16(addr: usize) -> u16 {
-        let v;
-        core::arch::asm!("lhu {v}, 0({a})", v = out(reg) v, a = in(reg) addr, options(nostack));
         v
     }
     #[inline(always)]
@@ -636,12 +667,12 @@ mod bare {
                 dma_w16(avail + 2, idx); // avail.idx
                 dma_fence();
                 mmio_w(mmio, virtio::QUEUE_NOTIFY, 0);
-                loop {
-                    dma_fence();
-                    if dma_r16(used + 2) == idx {
-                        break;
-                    }
-                }
+                // Block until the device interrupts (the kernel wakes us), then
+                // ack the device to deassert its interrupt line. The device has
+                // advanced the used ring by the time we wake.
+                sys_wait_irq(IRQ_CAP);
+                let status = mmio_r(mmio, virtio::INTERRUPT_STATUS);
+                mmio_w(mmio, virtio::INTERRUPT_ACK, status);
                 let w0 = dma_r64(buf) as usize;
                 let w1 = dma_r64(buf + 8) as usize;
                 let w2 = dma_r64(buf + 16) as usize;

@@ -54,6 +54,9 @@ pub enum TaskState {
     /// server `reply`s. On no endpoint queue (so no second server can re-match
     /// it); `pick_next` skips it. (Phase: call/reply IPC.)
     AwaitingReply,
+    /// Blocked in `wait_irq` for external interrupt `irq`; `pick_next` skips it
+    /// until the interrupt handler wakes it.
+    WaitingIrq(u32),
 }
 
 /// Number of capability slots in each task's table (its CSpace).
