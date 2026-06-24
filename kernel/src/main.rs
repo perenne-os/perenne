@@ -305,11 +305,13 @@ mod bare {
     const DEFER_EP: usize = 3;
     const DEFER_CAP: usize = 0;
 
-    /// The endpoint the blk component reports its self-test result on; the cap
-    /// slot it (and the consumer) hold it in; and the slot of its Interrupt cap.
+    /// The blk service endpoint (the kernel FS calls it; the blk server recvs).
     const BLK_EP: usize = 4;
-    const BLK_REPORT_CAP: usize = 0;
+    /// blk cap slots: 0 = the service endpoint, 1 = its Interrupt cap, 2 = the
+    /// one-shot Reply cap the server's recv mints per call.
+    const BLK_EP_CAP: usize = 0;
     const BLK_IRQ_CAP: usize = 1;
+    const BLK_REPLY_SLOT: usize = 2;
 
     /// Per-task kernel stack size (also the trap stack a U-mode task's
     /// traps land on). 16 KiB; per-task guard pages stay deferred.
@@ -632,12 +634,12 @@ mod bare {
             virtio::STATUS_ACK | virtio::STATUS_DRIVER | virtio::STATUS_FEATURES_OK | virtio::STATUS_DRIVER_OK);
     }
 
-    /// Issue one virtio-blk request for sector 0 (`write` = T_OUT else T_IN),
+    /// Issue one virtio-blk request for `sector` (`write` = T_OUT else T_IN),
     /// publishing the 3-descriptor chain and blocking on the device IRQ.
     /// Returns the device status byte (0 = OK). `avail_idx` is the current
     /// available-ring index.
     #[inline(always)]
-    unsafe fn blk_req(mmio: usize, dma: usize, write: bool, avail_idx: u16) -> u8 {
+    unsafe fn blk_req(mmio: usize, dma: usize, write: bool, avail_idx: u16, sector: u64) -> u8 {
         let desc = dma + virtio::VQ_DESC_OFF;
         let avail = dma + virtio::VQ_AVAIL_OFF;
         let hdr = dma + virtio::BLK_HDR_OFF;
@@ -646,7 +648,7 @@ mod bare {
         // request header
         dma_w32(hdr, if write { virtio::BLK_T_OUT } else { virtio::BLK_T_IN });
         dma_w32(hdr + 4, 0);
-        dma_w64(hdr + 8, 0); // sector 0
+        dma_w64(hdr + 8, sector);
         dma_w8(status, 0xff); // sentinel
         // desc 0: header (device reads)
         dma_w64(desc, hdr as u64);
@@ -1008,12 +1010,12 @@ mod bare {
         unsafe { sys_exit(sys_call(DEFER_CAP, 0xb1)) }
     }
 
-    /// The blk component (user-space virtio-blk driver). The kernel maps the
-    /// device's MMIO + a zeroed DMA frame into it (a1 = mmio, a2 = dma) and
-    /// grants an Interrupt cap for `wait_irq`. It self-tests a sector
-    /// round-trip: fill the data buffer with a pattern, WRITE sector 0, zero the
-    /// buffer, READ sector 0, and verify the pattern was restored. Reports the
-    /// result with a one-way send to the blk consumer.
+    /// The blk component (user-space virtio-blk driver), now a call/reply
+    /// **server**. The kernel maps the device's MMIO + a zeroed DMA frame into
+    /// it (a1 = mmio, a2 = dma) and grants an Interrupt cap for `wait_irq`. It
+    /// loops: receive a block number (the call badge), read that sector into the
+    /// identity-mapped DMA data page, and reply with the device status byte
+    /// (0 = OK). The kernel FS reads the data straight from the DMA page.
     #[no_mangle]
     #[link_section = ".user_text"]
     extern "C" fn blk_component() -> ! {
@@ -1025,52 +1027,17 @@ mod bare {
                 m = out(reg) mmio, d = out(reg) dma,
                 options(nomem, nostack, preserves_flags));
         }
-        let data = dma + virtio::BLK_DATA_OFF;
         // SAFETY: mmio + dma are mapped RW-U into this task; the sequence is the
-        // spike-verified virtio-blk bring-up.
+        // spike-verified virtio-blk bring-up, then a recv/read/reply loop.
         unsafe {
             virtio_queue_init(mmio, dma);
-            // Fill the data buffer with a known pattern and WRITE sector 0.
-            let mut i = 0;
-            while i < virtio::BLK_SECTOR_SIZE {
-                dma_w8(data + i, (i & 0xff) as u8);
-                i += 1;
+            let mut avail_idx: u16 = 0;
+            loop {
+                let block = sys_recv(BLK_EP_CAP, BLK_REPLY_SLOT); // badge = block #
+                let status = blk_req(mmio, dma, false, avail_idx, block as u64);
+                avail_idx = avail_idx.wrapping_add(1);
+                sys_reply(BLK_REPLY_SLOT, status as usize);
             }
-            let wst = blk_req(mmio, dma, true, 0);
-            // Zero the buffer, then READ sector 0 back into it.
-            i = 0;
-            while i < virtio::BLK_SECTOR_SIZE {
-                dma_w8(data + i, 0);
-                i += 1;
-            }
-            let rst = blk_req(mmio, dma, false, 1);
-            // Verify the pattern was restored (so both write and read hit disk).
-            let mut ok = wst == 0 && rst == 0;
-            i = 0;
-            while ok && i < virtio::BLK_SECTOR_SIZE {
-                if dma_r8(data + i) != (i & 0xff) as u8 {
-                    ok = false;
-                }
-                i += 1;
-            }
-            sys_send4(BLK_REPORT_CAP, if ok { 1 } else { 0 }, 0, 0, 0);
-            sys_exit(0)
-        }
-    }
-
-    /// The blk result consumer (kernel task): receives the blk component's
-    /// self-test result and prints it. Then idles (kernel tasks never return).
-    extern "C" fn blk_consumer() -> ! {
-        let m = sched::recv_message(BLK_REPORT_CAP);
-        if m.badge == 1 {
-            println!("blk: sector round-trip ok");
-        } else {
-            println!("blk: sector round-trip FAILED");
-        }
-        loop {
-            sched::yield_now();
-            // SAFETY: wait for the next interrupt between yields.
-            unsafe { core::arch::asm!("wfi") };
         }
     }
 
