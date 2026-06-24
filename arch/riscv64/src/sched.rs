@@ -549,6 +549,7 @@ fn block_current(endpoint: EndpointId, role: IpcRole) {
 #[cfg(target_arch = "riscv64")]
 pub fn ipc_recv(frame: &mut crate::trap::TrapFrame) {
     let cap_idx = frame.regs[9];
+    let reply_slot = frame.regs[10]; // a1: where to install a minted reply cap
     let step = SCHED.with(|s| {
         let cur = s.current;
         let ep = match cap_lookup(&s.tasks[cur].as_ref().unwrap().caps, cap_idx) {
@@ -563,9 +564,8 @@ pub fn ipc_recv(frame: &mut crate::trap::TrapFrame) {
             Some((si, is_call)) => {
                 let msg = s.tasks[si].as_ref().unwrap().message;
                 if is_call {
-                    // Bind us (the server) to this caller; it now awaits our reply.
-                    s.tasks[cur].as_mut().unwrap().caller = Some(si);
                     s.tasks[si].as_mut().unwrap().state = TaskState::AwaitingReply;
+                    mint_reply_cap(s, cur, si, reply_slot);
                 } else {
                     s.tasks[si].as_mut().unwrap().state = TaskState::Ready;
                 }
@@ -582,10 +582,26 @@ pub fn ipc_recv(frame: &mut crate::trap::TrapFrame) {
         RecvStep::Got(msg) => write_message(frame, msg),
         RecvStep::Block(ep) => {
             block_current(ep, IpcRole::Recv);
-            // Woken: a sender stored our inbox and set us Ready.
-            let msg = SCHED.with(|s| s.tasks[s.current].as_ref().unwrap().message);
+            // Woken: a sender stored our inbox. If it was a Call, `ipc_call`
+            // stashed the caller slot in `self.caller` — mint the reply cap.
+            let msg = SCHED.with(|s| {
+                let cur = s.current;
+                if let Some(caller) = s.tasks[cur].as_mut().unwrap().caller.take() {
+                    mint_reply_cap(s, cur, caller, reply_slot);
+                }
+                s.tasks[cur].as_ref().unwrap().message
+            });
             write_message(frame, msg);
         }
+    }
+}
+
+/// Install a one-shot `Reply(caller)` capability into `server`'s cap table at
+/// `slot` (a no-op if `slot` is out of range — a server bug, not fatal).
+#[cfg(target_arch = "riscv64")]
+fn mint_reply_cap(s: &mut Scheduler, server: usize, caller: usize, slot: usize) {
+    if slot < CAP_SLOTS {
+        s.tasks[server].as_mut().unwrap().caps[slot] = Some(crate::cap::Capability::Reply(caller));
     }
 }
 
@@ -741,21 +757,25 @@ pub fn ipc_call(frame: &mut crate::trap::TrapFrame) {
     }
 }
 
-/// Service a `reply` syscall: answer the caller the kernel recorded when this
-/// server received a Call. `a0`=badge, `a1..a3`=data. `a0` becomes `0` on
-/// success, or `usize::MAX` if there is no pending caller (or it has exited).
+/// Service a `reply` syscall: `a0` = the reply-cap slot, `a1` = badge, `a2..a4`
+/// = data. Look up the one-shot `Reply` capability at that slot, wake the
+/// caller it names, and consume the cap. `a0` becomes `0` on success, or
+/// `usize::MAX` if the slot holds no reply cap (or the caller is gone).
 #[cfg(target_arch = "riscv64")]
 pub fn ipc_reply(frame: &mut crate::trap::TrapFrame) {
+    let reply_slot = frame.regs[9];
     let msg = Message {
-        badge: frame.regs[9],
-        data: [frame.regs[10], frame.regs[11], frame.regs[12]],
+        badge: frame.regs[10],
+        data: [frame.regs[11], frame.regs[12], frame.regs[13]],
     };
     let ok = SCHED.with(|s| {
         let cur = s.current;
-        let caller = match s.tasks[cur].as_mut().unwrap().caller.take() {
+        let caller = match crate::cap::reply_caller(&s.tasks[cur].as_ref().unwrap().caps, reply_slot) {
             Some(c) => c,
             None => return false,
         };
+        // Consume the one-shot cap regardless of the caller's state.
+        s.tasks[cur].as_mut().unwrap().caps[reply_slot] = None;
         let awaiting = matches!(
             s.tasks[caller].as_ref(),
             Some(t) if t.state == TaskState::AwaitingReply
