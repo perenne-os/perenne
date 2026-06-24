@@ -26,6 +26,9 @@ pub enum Capability {
     Randomness,
     /// Authority to `wait_irq` on this IRQ number (a device's interrupt).
     Interrupt(u32),
+    /// One-shot authority to reply to the caller in this scheduler slot (minted
+    /// by the kernel when a server receives a Call; consumed by `reply`).
+    Reply(usize),
 }
 
 /// Look up capability `idx` in `caps`; if it is an endpoint capability,
@@ -60,6 +63,15 @@ pub fn has_randomness(caps: &[Option<Capability>], idx: usize) -> bool {
 pub fn interrupt_irq(caps: &[Option<Capability>], idx: usize) -> Option<u32> {
     match caps.get(idx) {
         Some(Some(Capability::Interrupt(irq))) => Some(*irq),
+        _ => None,
+    }
+}
+
+/// The caller a one-shot `Reply` capability at `idx` answers. `None` for an
+/// empty slot, an out-of-range index, or the wrong capability type.
+pub fn reply_caller(caps: &[Option<Capability>], idx: usize) -> Option<usize> {
+    match caps.get(idx) {
+        Some(Some(Capability::Reply(slot))) => Some(*slot),
         _ => None,
     }
 }
@@ -116,6 +128,15 @@ mod tests {
         assert_eq!(interrupt_irq(&caps, 2), None, "Randomness is not an Interrupt cap");
         assert_eq!(interrupt_irq(&caps, 0), None, "empty slot");
         assert_eq!(interrupt_irq(&caps, 9), None, "out of range");
+    }
+
+    #[test]
+    fn reply_caller_returns_the_caller_slot() {
+        let caps = [None, Some(Capability::Reply(4)), Some(Capability::Randomness)];
+        assert_eq!(reply_caller(&caps, 1), Some(4));
+        assert_eq!(reply_caller(&caps, 2), None, "Randomness is not a Reply cap");
+        assert_eq!(reply_caller(&caps, 0), None, "empty slot");
+        assert_eq!(reply_caller(&caps, 9), None, "out of range");
     }
 
     #[test]

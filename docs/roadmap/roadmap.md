@@ -219,8 +219,21 @@ the substrate the self-healer (Phase 5) runs on.
 - **Done when:** `./tools/test-qemu.ps1` shows the external interrupt wake the
   entropy component (which still seeds the pool / keys ML-KEM). QEMU-only.
 
-(Next candidates: one-shot reply capabilities for deferred/forwarded replies;
-interrupt-driven UART input; richer self-healing once a filesystem exists.)
+### One-shot reply capabilities  *(done — 2026-06-23)*
+
+- **Goal:** let a server hold multiple calls in flight and reply out of order,
+  by minting a one-shot reply capability per received call (replacing the
+  single-caller binding).
+- **You learn:** tracking one outstanding reply as a *capability per call*
+  (minted on receive, consumed on reply) instead of a field; and why a blocking
+  kernel needs no staleness guard (see
+  [learning note 0021](../learning/0021-reply-capabilities.md)).
+- **Done when:** `./tools/test-qemu.ps1` shows a deferrer server answer two
+  clients out of order, each exiting with its own reply value. QEMU-only.
+
+(Next candidates: capability delegation through IPC — enabling reply-cap
+forwarding and more; interrupt-driven UART input; richer self-healing once a
+filesystem exists.)
 
 ## Phase 5 — Self-healing seed
 
