@@ -231,9 +231,9 @@ the substrate the self-healer (Phase 5) runs on.
 - **Done when:** `./tools/test-qemu.ps1` shows a deferrer server answer two
   clients out of order, each exiting with its own reply value. QEMU-only.
 
-(Next candidates: capability delegation through IPC — enabling reply-cap
-forwarding and more; interrupt-driven UART input; richer self-healing once a
-filesystem exists.)
+(With reply caps done, the IPC + capability + device layers are mature enough
+to build on. The next work is a single large arc — Phase 6 below — rather than
+more one-off increments.)
 
 ## Phase 5 — Self-healing seed
 
@@ -272,7 +272,52 @@ diagnose before act.
 diagnoses (5a), and applies a caged, bounded fix (5b) for a contained
 component crash.
 
-## Phase 6+ — Breadth
+## Phase 6 — Persistent storage & the living knowledge base
 
-- **Goal:** more hardware (ARM/phones), a fuller HAL, device drivers, and the long tail.
+**North star (chosen 2026-06-23):** make the self-healing knowledge organism
+**real**. Today the runtime knowledge base is a single compiled-in stub
+(`KB-0005` in `heal.rs`); the healer cannot read the actual
+`knowledge-base/entries/*.md`, persist anything, or learn. This phase gives the
+OS **persistent storage** and turns the organism into a real, growable memory
+read from disk — the project's #1 differentiator
+([ADR 0005](../decisions/0005-self-healing-knowledge-organism.md)).
+
+A single coherent arc, pursued as a phase (not one-off candidates), decomposed
+into three sub-phases — each its own design → plan → build cycle, each meatier
+than the recent increments:
+
+### Phase 6a — Block storage (virtio-blk)
+
+- **Goal:** a virtio-blk driver — read and write disk sectors over a virtqueue,
+  reusing the virtio transport and the PLIC interrupt path. A QEMU `-drive`
+  backs it.
+- **You learn:** block device I/O (request header + data + status descriptors),
+  and how the same virtqueue machinery serves a very different device.
+- **Done when:** `./tools/test-qemu.ps1` writes a sector and reads it back
+  (round-trip), interrupt-driven. QEMU-only.
+
+### Phase 6b — A minimal filesystem
+
+- **Goal:** a simple filesystem over the block device — locate and read a file
+  by name from a disk image built at boot time.
+- **You learn:** the on-disk layout (superblock / directory / file extents) and
+  the block-cache boundary between a filesystem and a block device.
+- **Done when:** the kernel reads a named file's contents off the disk.
+
+### Phase 6c — The living knowledge base
+
+- **Goal:** the self-healer loads `knowledge-base/entries/*.md` from the
+  filesystem, parses them, and diagnoses a contained crash against the **real,
+  runtime** knowledge base instead of the compiled-in `KB-0005` — and (stretch)
+  records a newly-seen issue back to disk.
+- **You learn:** closing the self-healing loop with persistence — the organism
+  reads and grows its own memory.
+- **Done when:** a contained crash is diagnosed against a KB entry **loaded from
+  disk**, proving the organism is no longer hardcoded.
+
+## Phase 7+ — Breadth
+
+- **Goal:** more hardware (ARM/phones), a fuller HAL, more device drivers, and
+  the long tail — including the deferred capability-delegation and interactive-
+  shell directions.
 - **Done when:** never, really — this is where it becomes a real, growing OS.
