@@ -61,6 +61,8 @@ Plain-language definitions of terms used throughout these docs. Aimed at someone
 - **virtio** — a standard interface for *paravirtualized* devices (rng, block, net…): the guest talks to a simple, well-specified device the hypervisor provides, instead of emulating real hardware. Our entropy driver uses virtio-mmio (the memory-mapped transport).
 - **Virtqueue** — the shared-memory channel between a virtio driver and device: a descriptor table (buffers) plus an *available* ring (driver→device) and a *used* ring (device→driver). The driver publishes a buffer and the device returns it filled.
 - **DMA (direct memory access)** — a device reading/writing system memory directly, at *physical* addresses, without the CPU copying each byte. The virtqueue and its buffers live in DMA memory shared with the device.
+- **Block device** — a storage device addressed in fixed-size *sectors* (here 512 bytes) rather than as a byte stream; you read or write whole sectors by number. The disk is a block device (virtio-blk).
+- **virtio-blk** — the virtio block-device interface. Each request is a 3-descriptor chain (a header naming the operation + sector, a data buffer, and a status byte) submitted through the virtqueue.
 - **UART** — the serial-port controller that turns bytes into the serial line signal; the kernel's text console.
 - **ns16550** — the ubiquitous 16550-family UART (QEMU virt and many boards), programmed via a few byte registers spaced by `reg-shift`.
 - **`THR` / `LSR` / `THRE`** — the 16550 transmit-holding register (where you write a byte), the line-status register, and its "holding register empty" bit (`0x20`) the driver polls before transmitting.

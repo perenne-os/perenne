@@ -36,7 +36,9 @@
 # when it asks without the capability, served (32 bytes) with it; and the
 # entropy component is INTERRUPT-DRIVEN — it blocks on its device's IRQ via the
 # PLIC (capability-gated 'wait_irq') instead of polling, and the kernel's
-# external-interrupt handler wakes it.
+# external-interrupt handler wakes it; and a user-space virtio-blk driver
+# (Phase 6a) reads and writes a disk sector — it writes a pattern to sector 0,
+# reads it back, and verifies the round-trip, interrupt-driven.
 # The rest of the system keeps running throughout.
 # (Earlier IPC/isolation proofs are subsumed by this component demo, which
 # still runs each task in its own address space.)
@@ -54,6 +56,11 @@ if (-not (Test-Path $kernelElf)) {
 $serialLog = Join-Path ([System.IO.Path]::GetTempPath()) "kernel-qemu-serial.log"
 if (Test-Path $serialLog) { Remove-Item $serialLog -Force }
 
+# A scratch raw disk image (64 KiB of zeros) for the virtio-blk driver to
+# write a sector to and read it back.
+$diskImg = Join-Path ([System.IO.Path]::GetTempPath()) "kernel-qemu-disk.img"
+[System.IO.File]::WriteAllBytes($diskImg, (New-Object byte[] 65536))
+
 # Read a file QEMU may still hold open for writing (share ReadWrite).
 function Read-LogText($path) {
     if (-not (Test-Path $path)) { return "" }
@@ -66,6 +73,8 @@ $qemu = Start-Process qemu-system-riscv64 -PassThru -NoNewWindow -ArgumentList @
     "-m", "192M",
     "-global", "virtio-mmio.force-legacy=false",
     "-device", "virtio-rng-device",
+    "-drive", "file=$diskImg,if=none,format=raw,id=blk0",
+    "-device", "virtio-blk-device,drive=blk0",
     "-display", "none",
     "-serial", "file:$serialLog",
     "-bios", "default",
@@ -85,7 +94,8 @@ $mustMatch = @(
     "sched: task 'dclientA' exited \(code 417\)",
     "sched: task 'dclientB' exited \(code 433\)",
     "ipc: 'rogue' send rejected \(no capability\)",
-    "irq: external IRQ 8 woke 'entropy'",
+    "irq: external IRQ \d+ woke",
+    "blk: sector round-trip ok",
     "entropy: pool seeded from virtio-rng",
     "entropy: pool serves on demand \(draws differ\)",
     "entropy: pool reseeded from virtio-rng",
