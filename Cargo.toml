@@ -10,6 +10,7 @@ members = [
     "arch/riscv64",
     "libs/common",
     "libs/crypto",
+    "tools/mkfs",
 ]
 
 [workspace.package]
