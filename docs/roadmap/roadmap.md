@@ -207,9 +207,20 @@ the substrate the self-healer (Phase 5) runs on.
 - **Done when:** `./tools/test-qemu.ps1` shows a component refused without the
   capability and served with it. QEMU-only.
 
-(Next candidates: an interrupt-driven (PLIC) device path; one-shot reply
-capabilities for deferred/forwarded replies; richer self-healing once a
-filesystem exists.)
+### PLIC interrupt path  *(done — 2026-06-23)*
+
+- **Goal:** the first interrupt-driven device — drive the PLIC and let the
+  virtio-rng component block on its IRQ instead of polling.
+- **You learn:** an interrupt controller (claim/complete, per-context
+  enable/threshold), and why a kernel/userspace interrupt split masks on
+  deliver (via claim's in-service state) and re-arms on ack — the
+  level-triggered line storms otherwise (see
+  [learning note 0020](../learning/0020-plic-interrupts.md)).
+- **Done when:** `./tools/test-qemu.ps1` shows the external interrupt wake the
+  entropy component (which still seeds the pool / keys ML-KEM). QEMU-only.
+
+(Next candidates: one-shot reply capabilities for deferred/forwarded replies;
+interrupt-driven UART input; richer self-healing once a filesystem exists.)
 
 ## Phase 5 — Self-healing seed
 
