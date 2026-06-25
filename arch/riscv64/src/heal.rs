@@ -1,61 +1,186 @@
-//! The self-healing knowledge organism — deterministic core (Phase 5a).
+//! The self-healing knowledge organism — deterministic core (Phase 5a + 6c).
 //!
 //! When the microkernel contains a crashed component
 //! (`sched::exit_current(Killed{cause})`), it consults this module to
-//! DIAGNOSE the crash: match the fault against a compiled-in knowledge base
-//! and return the known issue + its fix playbook. The match is a pure,
-//! explainable table lookup — never a black box — which is why it is safe in
-//! the kernel (ADR 0005). 5a only diagnoses; the caged, isolated, user-space
-//! healer that *acts* on the playbook is Phase 5b.
+//! DIAGNOSE the crash: match the fault against the knowledge base and return
+//! the known issue + its fix playbook. The match is a pure, explainable table
+//! lookup — never a black box — which is why it is safe in the kernel (ADR
+//! 0005). 5a/6c only diagnose; the caged, isolated, user-space healer that
+//! *acts* on the playbook is Phase 5b.
 //!
-//! The compiled records here are the machine-readable subset of the human
-//! knowledge base (`knowledge-base/entries/`); a real loader awaits a
-//! filesystem.
+//! Phase 6c made the table **data-driven**: instead of a compiled-in record,
+//! the boot-time KB loader reads `knowledge-base/entries/*.md` off the disk,
+//! parses each (`kernel_common::kb`), and `install`s the tokened ones here.
+//! `diagnose` then selects the entry whose own on-disk `match-cause` token
+//! corresponds to the crash cause. What stays in code is only the kernel's
+//! job: decoding a raw trap into a stable token (`cause_token`).
 
 use crate::trap::Cause;
 
-/// A compiled-in knowledge record — the runtime subset of a
-/// `knowledge-base/entries/*.md` issue record.
+const ID_CAP: usize = 16;
+const TITLE_CAP: usize = 96;
+const PLAYBOOK_CAP: usize = 256;
+const TOKEN_CAP: usize = 24;
+/// Runtime table capacity (one directory block holds at most 8 entries).
+pub const MAX_ISSUES: usize = 8;
+
+/// A fixed-capacity, copyable string — owns its bytes so a `KnownIssue` can
+/// outlive the disk buffer it was parsed from (no allocator in the kernel).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct KnownIssue {
-    pub id: &'static str,
-    pub title: &'static str,
-    pub playbook: &'static str,
+struct Buf<const N: usize> {
+    bytes: [u8; N],
+    len: usize,
 }
 
-/// KB-0005: a user-space component terminated by a fatal fault. Mirrors
-/// `knowledge-base/entries/KB-0005.md`.
-static KB_0005: KnownIssue = KnownIssue {
-    id: "KB-0005",
-    title: "user-space component terminated by a fatal fault",
-    playbook: "restart the component (bounded retries); if it keeps crashing, stop and flag for triage",
-};
+impl<const N: usize> Buf<N> {
+    fn from_str(s: &str) -> Self {
+        let mut k = s.len().min(N);
+        while k > 0 && !s.is_char_boundary(k) {
+            k -= 1; // never split a UTF-8 char
+        }
+        let mut bytes = [0u8; N];
+        bytes[..k].copy_from_slice(&s.as_bytes()[..k]);
+        Buf { bytes, len: k }
+    }
+    fn as_str(&self) -> &str {
+        // bytes[..len] is a prefix of a &str cut at a char boundary -> valid.
+        core::str::from_utf8(&self.bytes[..self.len]).unwrap_or("")
+    }
+}
 
-/// Diagnose a contained crash by matching its `cause` to a known issue.
-/// Deterministic and total over `Cause` (returns `None` for non-crash
-/// causes). Pure — host-tested, explainable, no allocation.
-pub fn diagnose(cause: Cause) -> Option<&'static KnownIssue> {
+impl<const N: usize> Default for Buf<N> {
+    fn default() -> Self {
+        Buf { bytes: [0; N], len: 0 }
+    }
+}
+
+/// A runtime knowledge record — the subset of a `knowledge-base/entries/*.md`
+/// issue record the self-healer matches and reports, loaded from disk at boot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct KnownIssue {
+    id: Buf<ID_CAP>,
+    title: Buf<TITLE_CAP>,
+    playbook: Buf<PLAYBOOK_CAP>,
+    match_cause: Buf<TOKEN_CAP>,
+}
+
+impl KnownIssue {
+    fn new(id: &str, title: &str, playbook: &str, match_cause: &str) -> Self {
+        KnownIssue {
+            id: Buf::from_str(id),
+            title: Buf::from_str(title),
+            playbook: Buf::from_str(playbook),
+            match_cause: Buf::from_str(match_cause),
+        }
+    }
+    pub fn id(&self) -> &str {
+        self.id.as_str()
+    }
+    pub fn title(&self) -> &str {
+        self.title.as_str()
+    }
+    pub fn playbook(&self) -> &str {
+        self.playbook.as_str()
+    }
+    fn match_cause(&self) -> &str {
+        self.match_cause.as_str()
+    }
+}
+
+/// The runtime knowledge base — populated by `install` at boot (single hart,
+/// before any gated patient can crash), then read-only.
+static mut KB_TABLE: [Option<KnownIssue>; MAX_ISSUES] = [None; MAX_ISSUES];
+static mut KB_COUNT: usize = 0;
+
+/// Install a parsed KB record into the runtime table. Returns false if the
+/// table is full. Called only by the boot-time loader.
+pub fn install(id: &str, title: &str, playbook: &str, match_cause: Option<&str>) -> bool {
+    // SAFETY: single hart; called only from the boot KB loader before the
+    // gated patients run; no concurrent access.
+    unsafe {
+        let count = core::ptr::read(core::ptr::addr_of!(KB_COUNT));
+        if count >= MAX_ISSUES {
+            return false;
+        }
+        let issue = KnownIssue::new(id, title, playbook, match_cause.unwrap_or(""));
+        let table = &mut *core::ptr::addr_of_mut!(KB_TABLE);
+        table[count] = Some(issue);
+        core::ptr::write(core::ptr::addr_of_mut!(KB_COUNT), count + 1);
+        true
+    }
+}
+
+/// Number of entries installed (for boot logging).
+pub fn loaded_count() -> usize {
+    // SAFETY: single hart; read of a boot-populated counter.
+    unsafe { core::ptr::read(core::ptr::addr_of!(KB_COUNT)) }
+}
+
+/// Map a raw trap cause to a stable, knowledge-base-matchable token. This is
+/// the kernel's job (it owns trap decoding); the *knowledge* keyed by the
+/// token lives on disk. Pure, host-tested.
+fn cause_token(cause: Cause) -> Option<&'static str> {
     match cause {
-        Cause::LoadPageFault | Cause::StorePageFault | Cause::InstructionPageFault => Some(&KB_0005),
+        Cause::LoadPageFault | Cause::StorePageFault | Cause::InstructionPageFault => {
+            Some("page-fault")
+        }
         _ => None,
     }
+}
+
+/// Find the loaded issue whose on-disk `match-cause` token matches `cause`.
+/// Pure over the table — host-tested — so the selection is explainable.
+fn match_issue(table: &[Option<KnownIssue>], cause: Cause) -> Option<&KnownIssue> {
+    let token = cause_token(cause)?;
+    table.iter().flatten().find(|i| i.match_cause() == token)
+}
+
+/// Diagnose a contained crash against the disk-loaded knowledge base.
+/// Deterministic, allocation-free, and a pure lookup (safe in the crash path).
+pub fn diagnose(cause: Cause) -> Option<&'static KnownIssue> {
+    // SAFETY: single hart; the table is filled at boot (patients are gated on
+    // the load) and never mutated afterwards, so this shared read is sound.
+    let table = unsafe { &*core::ptr::addr_of!(KB_TABLE) };
+    match_issue(table, cause)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn diagnoses_a_fatal_fault_as_kb_0005() {
-        assert_eq!(diagnose(Cause::LoadPageFault).map(|i| i.id), Some("KB-0005"));
-        assert_eq!(diagnose(Cause::StorePageFault).map(|i| i.id), Some("KB-0005"));
-        assert_eq!(diagnose(Cause::InstructionPageFault).map(|i| i.id), Some("KB-0005"));
+    fn table() -> [Option<KnownIssue>; MAX_ISSUES] {
+        let mut t: [Option<KnownIssue>; MAX_ISSUES] = Default::default();
+        t[0] = Some(KnownIssue::new("KB-0099", "decoy", "do nothing", ""));
+        t[1] = Some(KnownIssue::new(
+            "KB-0005",
+            "fatal fault",
+            "Restart the component",
+            "page-fault",
+        ));
+        t
     }
 
     #[test]
-    fn no_diagnosis_for_a_non_crash_cause() {
-        assert!(diagnose(Cause::Breakpoint).is_none());
-        assert!(diagnose(Cause::SupervisorTimer).is_none());
-        assert!(diagnose(Cause::Unknown { interrupt: false, code: 2 }).is_none());
+    fn page_faults_map_to_the_page_fault_token() {
+        assert_eq!(cause_token(Cause::LoadPageFault), Some("page-fault"));
+        assert_eq!(cause_token(Cause::StorePageFault), Some("page-fault"));
+        assert_eq!(cause_token(Cause::InstructionPageFault), Some("page-fault"));
+        assert_eq!(cause_token(Cause::Breakpoint), None);
+    }
+
+    #[test]
+    fn match_selects_the_entry_by_its_on_disk_token() {
+        let t = table();
+        let hit = match_issue(&t, Cause::StorePageFault).expect("matches");
+        assert_eq!(hit.id(), "KB-0005");
+        assert_eq!(hit.playbook(), "Restart the component");
+    }
+
+    #[test]
+    fn no_match_for_a_non_crash_cause_or_empty_table() {
+        let t = table();
+        assert!(match_issue(&t, Cause::SupervisorTimer).is_none());
+        let empty: [Option<KnownIssue>; MAX_ISSUES] = Default::default();
+        assert!(match_issue(&empty, Cause::LoadPageFault).is_none());
     }
 }
