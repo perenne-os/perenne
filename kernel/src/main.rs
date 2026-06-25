@@ -190,20 +190,21 @@ mod bare {
             mem::build_user_space(dbu, NO_DEVICE));
         sched::grant_cap(dclient_b, DEFER_CAP, Capability::Endpoint(DEFER_EP));
 
-        // Phase 6a — block storage: a user-space virtio-blk driver. The consumer
-        // (a kernel task) recv-blocks for the self-test result before the
-        // component reports.
+        // Phase 6b — a minimal filesystem. The blk driver is now a call/reply
+        // server (recv block N -> virtio read into its identity-mapped DMA page
+        // -> reply). The kernel `fs` task is the client: it calls the server to
+        // read blocks, finds a file by name, and prints its contents off disk.
+        // Spawn the server first (lower slot) so it recv-blocks before fs calls.
         if let Some(blk) = blk_base {
             let dma_pa = mem::frame::alloc_zeroed().expect("no DMA frame for blk").0;
-            let blk_cons = sched::spawn("blkc", blk_consumer,
-                core::ptr::addr_of!(KS_BLKC) as usize + TASK_STACK);
-            sched::grant_cap(blk_cons, BLK_REPORT_CAP, Capability::Endpoint(BLK_EP));
+            // SAFETY: set once at boot before the fs task runs; single hart.
+            unsafe { BLK_DMA_PA = dma_pa; }
 
             let bu = ustack(core::ptr::addr_of!(US_BLK) as usize);
             let blkdev = sched::spawn_user("blk", blk_component, bu.1,
                 core::ptr::addr_of!(KS_BLK) as usize + TASK_STACK,
                 mem::build_virtio_space(bu, (blk, blk + 0x1000), (dma_pa, dma_pa + 0x1000)));
-            sched::grant_cap(blkdev, BLK_REPORT_CAP, Capability::Endpoint(BLK_EP));
+            sched::grant_cap(blkdev, BLK_EP_CAP, Capability::Endpoint(BLK_EP));
 
             let n = machine.virtio_mmio_count;
             let blk_irq = virtio::irq_for_base(&machine.virtio_mmio[..n], &machine.virtio_mmio_irq[..n], blk)
@@ -216,6 +217,11 @@ mod bare {
             plic::enable(blk_irq);
             // SAFETY: the trap handler and the PLIC are set up to service it.
             unsafe { csr::sie_enable_external() };
+
+            // The kernel filesystem client, holding the service endpoint cap.
+            let fs = sched::spawn("fs", fs_task,
+                core::ptr::addr_of!(KS_FS) as usize + TASK_STACK);
+            sched::grant_cap(fs, BLK_EP_CAP, Capability::Endpoint(BLK_EP));
         } else {
             println!("blk: no virtio-blk device found");
         }
@@ -313,6 +319,16 @@ mod bare {
     const BLK_IRQ_CAP: usize = 1;
     const BLK_REPLY_SLOT: usize = 2;
 
+    /// Physical address of the blk DMA frame (identity-mapped); the FS reads
+    /// sector bytes from `BLK_DMA_PA + BLK_DATA_OFF`. Set by `kmain`.
+    static mut BLK_DMA_PA: usize = 0;
+    /// The block currently resident in the DMA data page (the one-block cache);
+    /// `-1` = none. Re-reading the same block skips the IPC round-trip.
+    static mut FS_CACHED_BLOCK: i64 = -1;
+    /// Kernel buffer a read file is copied into (out of the reused DMA page).
+    const FS_FILEBUF_LEN: usize = 4096;
+    static mut FS_FILEBUF: [u8; FS_FILEBUF_LEN] = [0; FS_FILEBUF_LEN];
+
     /// Per-task kernel stack size (also the trap stack a U-mode task's
     /// traps land on). 16 KiB; per-task guard pages stay deferred.
     const TASK_STACK: usize = 16 * 1024;
@@ -329,7 +345,7 @@ mod bare {
     static mut KS_DCLIENTA: KStack = [0; TASK_STACK];
     static mut KS_DCLIENTB: KStack = [0; TASK_STACK];
     static mut KS_BLK: KStack = [0; TASK_STACK];
-    static mut KS_BLKC: KStack = [0; TASK_STACK];
+    static mut KS_FS: KStack = [0; TASK_STACK];
     static mut KS_IDLE: KStack = [0; TASK_STACK];
 
     /// The PQC consumer runs ML-KEM-768, which in a debug build needs a much
@@ -1038,6 +1054,93 @@ mod bare {
                 avail_idx = avail_idx.wrapping_add(1);
                 sys_reply(BLK_REPLY_SLOT, status as usize);
             }
+        }
+    }
+
+    /// The FS↔device boundary: read block `n` via the blk server into the
+    /// identity-mapped DMA data page and return a view of it. `None` on a device
+    /// I/O error. A trivial one-block cache skips the IPC if `n` is resident.
+    fn fs_read_block(n: u32) -> Option<&'static [u8]> {
+        // SAFETY: BLK_DMA_PA is the kernel-allocated, identity-mapped DMA frame;
+        // the slice addresses real RAM. Single hart; the cache state is ours.
+        unsafe {
+            if FS_CACHED_BLOCK != n as i64 {
+                let status = sched::call_message(BLK_EP_CAP, n as usize);
+                if status != 0 {
+                    FS_CACHED_BLOCK = -1;
+                    return None;
+                }
+                FS_CACHED_BLOCK = n as i64;
+            }
+            Some(core::slice::from_raw_parts(
+                (BLK_DMA_PA + virtio::BLK_DATA_OFF) as *const u8,
+                virtio::BLK_SECTOR_SIZE,
+            ))
+        }
+    }
+
+    /// Locate `name` in the filesystem and copy its contents into `FS_FILEBUF`.
+    /// Returns the file's contents on success, or `None` (with a logged reason).
+    fn fs_read_file(name: &str) -> Option<&'static [u8]> {
+        use kernel_common::fs;
+        let sb = match fs::Superblock::decode(fs_read_block(0)?) {
+            Some(sb) => sb,
+            None => {
+                println!("fs: bad superblock");
+                return None;
+            }
+        };
+        // Copy the directory block out before later reads clobber the DMA page.
+        let mut dir = [0u8; fs::BLOCK_SIZE];
+        dir.copy_from_slice(fs_read_block(sb.dir_block)?);
+        let ent = match fs::lookup(&dir, sb.dir_entries, name) {
+            Some(e) => e,
+            None => {
+                println!("fs: file '{}' not found", name);
+                return None;
+            }
+        };
+        let len = ent.byte_len as usize;
+        if len > FS_FILEBUF_LEN {
+            println!("fs: file '{}' too large ({} bytes)", name, len);
+            return None;
+        }
+        let nblocks = fs::block_count(ent.byte_len) as usize;
+        // SAFETY: single hart; FS_FILEBUF is ours for the duration of this read.
+        unsafe {
+            for i in 0..nblocks {
+                let blk = match fs_read_block(ent.start_block + i as u32) {
+                    Some(b) => b,
+                    None => {
+                        println!("fs: block read error");
+                        return None;
+                    }
+                };
+                let off = i * fs::BLOCK_SIZE;
+                let take = core::cmp::min(fs::BLOCK_SIZE, len - off);
+                FS_FILEBUF[off..off + take].copy_from_slice(&blk[..take]);
+            }
+            Some(&FS_FILEBUF[..len])
+        }
+    }
+
+    /// The kernel filesystem task: reads a known file by name off the disk
+    /// (through the blk server) and prints its length and contents, then idles.
+    extern "C" fn fs_task() -> ! {
+        let name = "KB-0005";
+        match fs_read_file(name) {
+            Some(bytes) => {
+                println!("fs: read '{}' ({} bytes)", name, bytes.len());
+                if let Ok(text) = core::str::from_utf8(bytes) {
+                    println!("{}", text);
+                }
+            }
+            None => println!("fs: read of '{}' failed", name),
+        }
+        loop {
+            sched::yield_now();
+            // SAFETY: wait for the next interrupt between yields.
+            unsafe { core::arch::asm!("wfi") };
         }
     }
 
