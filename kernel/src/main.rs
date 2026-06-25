@@ -18,7 +18,7 @@ mod bare {
     use core::panic::PanicInfo;
 
     use kernel::GREETING;
-    use kernel_arch_riscv64::{cap::Capability, console, csr, dt, entropy, mem, plic, println, sched, task::Message, timer, trap, virtio};
+    use kernel_arch_riscv64::{cap::Capability, console, csr, dt, entropy, heal, mem, plic, println, sched, task::Message, timer, trap, virtio};
     use kernel_common::PROJECT_NAME;
 
     /// Rust entry, called from the boot assembly with the arguments
@@ -115,6 +115,8 @@ mod bare {
         // notification carries badge 1 so the healer uses that exact cap.
         sched::grant_cap(healer, 1, Capability::Restart(transient));
         sched::set_crash_badge(transient, 1);
+        // Phase 6c: the patient blocks on the KB-ready gate on its first run.
+        sched::grant_cap(transient, GATE_CAP, Capability::Endpoint(GATE_EP));
 
         // A patient that always crashes: exercises the retry bound.
         let fu = ustack(core::ptr::addr_of!(US_FLAKY) as usize);
@@ -123,6 +125,8 @@ mod bare {
             mem::build_user_space(fu, NO_DEVICE));
         sched::grant_cap(healer, 2, Capability::Restart(flaky));
         sched::set_crash_badge(flaky, 2);
+        // Phase 6c: same KB-ready gate (first run only).
+        sched::grant_cap(flaky, GATE_CAP, Capability::Endpoint(GATE_EP));
 
         // The entropy component (a user-space virtio-rng driver) + its kernel
         // consumer, if the device is present. The consumer (earlier slot)
@@ -195,10 +199,19 @@ mod bare {
         // -> reply). The kernel `fs` task is the client: it calls the server to
         // read blocks, finds a file by name, and prints its contents off disk.
         // Spawn the server first (lower slot) so it recv-blocks before fs calls.
+        // Phase 6c — the KB loader. Spawned unconditionally so it always
+        // releases the gated patients; it reads the KB only if a disk backs
+        // the FS (KB_HAS_BLK, set in the blk block below).
+        let kb_loader = sched::spawn("kb", kb_loader_task,
+            core::ptr::addr_of!(KS_FS) as usize + TASK_STACK);
+        sched::grant_cap(kb_loader, GATE_LOADER_CAP, Capability::Endpoint(GATE_EP));
+
         if let Some(blk) = blk_base {
             let dma_pa = mem::frame::alloc_zeroed().expect("no DMA frame for blk").0;
-            // SAFETY: set once at boot before the fs task runs; single hart.
+            // SAFETY: set once at boot before the loader runs; single hart.
             unsafe { BLK_DMA_PA = dma_pa; }
+            // SAFETY: set once at boot before the loader runs; single hart.
+            unsafe { KB_HAS_BLK = true; }
 
             let bu = ustack(core::ptr::addr_of!(US_BLK) as usize);
             let blkdev = sched::spawn_user("blk", blk_component, bu.1,
@@ -218,10 +231,8 @@ mod bare {
             // SAFETY: the trap handler and the PLIC are set up to service it.
             unsafe { csr::sie_enable_external() };
 
-            // The kernel filesystem client, holding the service endpoint cap.
-            let fs = sched::spawn("fs", fs_task,
-                core::ptr::addr_of!(KS_FS) as usize + TASK_STACK);
-            sched::grant_cap(fs, BLK_EP_CAP, Capability::Endpoint(BLK_EP));
+            // The KB loader is the FS client: grant it the blk service cap.
+            sched::grant_cap(kb_loader, BLK_EP_CAP, Capability::Endpoint(BLK_EP));
         } else {
             println!("blk: no virtio-blk device found");
         }
@@ -318,6 +329,17 @@ mod bare {
     const BLK_EP_CAP: usize = 0;
     const BLK_IRQ_CAP: usize = 1;
     const BLK_REPLY_SLOT: usize = 2;
+
+    /// Phase 6c — the KB-ready gate. Patients block on this endpoint on their
+    /// first run so they cannot crash before the loader builds the on-disk KB
+    /// table; the loader releases them once it has.
+    const GATE_EP: usize = 5;
+    const GATE_CAP: usize = 0; // a patient's gate-endpoint cap slot
+    const GATE_REPLY_SLOT: usize = 1; // a patient's reply cap slot
+    const GATE_LOADER_CAP: usize = 1; // the loader's gate-endpoint cap slot
+    /// Set true at boot if a virtio-blk device backs the FS (the loader needs
+    /// it to read the KB; without it the loader just releases the patients).
+    static mut KB_HAS_BLK: bool = false;
 
     /// Physical address of the blk DMA frame (identity-mapped); the FS reads
     /// sector bytes from `BLK_DMA_PA + BLK_DATA_OFF`. Set by `kmain`.
@@ -771,6 +793,19 @@ mod bare {
     #[no_mangle]
     #[link_section = ".user_text"]
     extern "C" fn flaky_task() -> ! {
+        let generation: usize;
+        // SAFETY: read the launch generation the kernel placed in a0.
+        unsafe {
+            core::arch::asm!("mv {g}, a0", g = out(reg) generation, options(nomem, nostack, preserves_flags));
+        }
+        if generation == 0 {
+            // Phase 6c gate (first run only): block until the KB is loaded.
+            // SAFETY: we hold Endpoint(GATE_EP) at GATE_CAP; recv then reply.
+            unsafe {
+                let _ = sys_recv(GATE_CAP, GATE_REPLY_SLOT);
+                sys_reply(GATE_REPLY_SLOT, 0);
+            }
+        }
         let _v: u8;
         // SAFETY: the deliberate fault. 0x80200000 is the kernel .text base
         // (no U bit); the U-mode load faults before completing and the kernel
@@ -973,6 +1008,14 @@ mod bare {
             core::arch::asm!("mv {g}, a0", g = out(reg) generation, options(nomem, nostack, preserves_flags));
         }
         if generation == 0 {
+            // Phase 6c gate: wait until the KB loader has built the on-disk
+            // table so our crash is diagnosed against the real KB. First run
+            // only — a restart (generation > 0) skips this.
+            // SAFETY: we hold Endpoint(GATE_EP) at GATE_CAP; recv then reply.
+            unsafe {
+                let _ = sys_recv(GATE_CAP, GATE_REPLY_SLOT);
+                sys_reply(GATE_REPLY_SLOT, 0);
+            }
             let _v: u8;
             // SAFETY: the deliberate first-run fault (a transient bug). The
             // U-mode load of kernel .text faults (LoadPageFault); the kernel
@@ -1124,19 +1167,67 @@ mod bare {
         }
     }
 
-    /// The kernel filesystem task: reads a known file by name off the disk
-    /// (through the blk server) and prints its length and contents, then idles.
-    extern "C" fn fs_task() -> ! {
-        let name = "KB-0005";
-        match fs_read_file(name) {
-            Some(bytes) => {
-                println!("fs: read '{}' ({} bytes)", name, bytes.len());
-                if let Ok(text) = core::str::from_utf8(bytes) {
-                    println!("{}", text);
+    /// The KB loader (Phase 6c): enumerate the on-disk directory, read and
+    /// parse each `knowledge-base/entries/*.md`, and install the tokened ones
+    /// into the self-healer's runtime table — so a later contained crash is
+    /// diagnosed against the real, on-disk knowledge base. Then release the
+    /// gated patients and idle.
+    extern "C" fn kb_loader_task() -> ! {
+        use kernel_common::{fs, kb};
+        let mut scanned = 0usize;
+        let mut loaded = 0usize;
+        // SAFETY: single hart; KB_HAS_BLK set once at boot.
+        let has_blk = unsafe { core::ptr::read(core::ptr::addr_of!(KB_HAS_BLK)) };
+        if has_blk {
+            'load: {
+                let sb = match fs_read_block(0).and_then(fs::Superblock::decode) {
+                    Some(sb) => sb,
+                    None => {
+                        println!("kb: bad superblock; KB not loaded");
+                        break 'load;
+                    }
+                };
+                let mut dir = [0u8; fs::BLOCK_SIZE];
+                match fs_read_block(sb.dir_block) {
+                    Some(b) => dir.copy_from_slice(b),
+                    None => {
+                        println!("kb: directory read failed; KB not loaded");
+                        break 'load;
+                    }
+                }
+                for i in 0..sb.dir_entries as usize {
+                    let ent = match fs::dir_entry_at(&dir, i) {
+                        Some(e) => e,
+                        None => break,
+                    };
+                    scanned += 1;
+                    // `ent` (and its name) live on our stack; fs_read_file only
+                    // touches the DMA page and FS_FILEBUF.
+                    let bytes = match fs_read_file(ent.name_str()) {
+                        Some(b) => b,
+                        None => continue,
+                    };
+                    if let Some(rec) = kb::parse(bytes) {
+                        if rec.match_cause.is_some()
+                            && heal::install(rec.id, rec.title, rec.playbook, rec.match_cause)
+                        {
+                            loaded += 1;
+                        }
+                    }
                 }
             }
-            None => println!("fs: read of '{}' failed", name),
+        } else {
+            println!("kb: no disk; KB not loaded");
         }
+        println!(
+            "heal: loaded {} KB entr{} from disk (scanned {})",
+            loaded,
+            if loaded == 1 { "y" } else { "ies" },
+            scanned
+        );
+        // Release the two gated patients now that the table is built.
+        sched::call_message(GATE_LOADER_CAP, 0);
+        sched::call_message(GATE_LOADER_CAP, 0);
         loop {
             sched::yield_now();
             // SAFETY: wait for the next interrupt between yields.

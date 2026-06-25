@@ -100,6 +100,12 @@ impl DirEntry {
         DirEntry { name, start_block, byte_len }
     }
 
+    /// The entry's name as a `&str` (NUL padding trimmed).
+    pub fn name_str(&self) -> &str {
+        let end = self.name.iter().position(|&c| c == 0).unwrap_or(NAME_LEN);
+        core::str::from_utf8(&self.name[..end]).unwrap_or("")
+    }
+
     /// Does this entry's (NUL-padded) name equal `want`?
     pub fn name_is(&self, want: &str) -> bool {
         let w = want.as_bytes();
@@ -114,6 +120,16 @@ impl DirEntry {
 /// Number of blocks a file of `byte_len` bytes occupies (ceil division).
 pub fn block_count(byte_len: u32) -> u32 {
     (byte_len + BLOCK_SIZE as u32 - 1) / BLOCK_SIZE as u32
+}
+
+/// Decode the `i`-th directory entry packed in one directory block.
+/// `None` if `i` is past the block.
+pub fn dir_entry_at(dir_bytes: &[u8], i: usize) -> Option<DirEntry> {
+    let off = i * DIRENT_SIZE;
+    if i >= DIRENTS_PER_BLOCK || off + DIRENT_SIZE > dir_bytes.len() {
+        return None;
+    }
+    Some(DirEntry::decode(&dir_bytes[off..off + DIRENT_SIZE]))
 }
 
 /// Find the entry named `name` among the first `count` entries packed in one
@@ -180,6 +196,16 @@ mod tests {
         assert_eq!(block_count(512), 1);
         assert_eq!(block_count(513), 2);
         assert_eq!(block_count(1024), 2);
+    }
+
+    #[test]
+    fn dir_entry_at_and_name_str_enumerate() {
+        let mut dir = [0u8; BLOCK_SIZE];
+        DirEntry::new("KB-0005", 2, 10).encode(&mut dir[0..DIRENT_SIZE]);
+        DirEntry::new("KB-0004", 3, 20).encode(&mut dir[DIRENT_SIZE..2 * DIRENT_SIZE]);
+        assert_eq!(dir_entry_at(&dir, 0).unwrap().name_str(), "KB-0005");
+        assert_eq!(dir_entry_at(&dir, 1).unwrap().name_str(), "KB-0004");
+        assert!(dir_entry_at(&dir, DIRENTS_PER_BLOCK).is_none()); // out of block
     }
 
     #[test]
