@@ -44,6 +44,16 @@ pub(crate) fn on_tick() {
     arm_next();
 }
 
+/// Re-arm the timer one interval from now — also clears a currently-pending
+/// timer interrupt (`sip.STIP` deasserts once `mtimecmp` is in the future).
+/// The scheduler calls this when switching to a new task so a timer that came
+/// due while interrupts were masked for the switch is not delivered at the new
+/// task's very first instruction (which would preempt it before it runs and,
+/// with an unlucky schedule, starve it — see learning note 0023).
+pub fn rearm() {
+    arm_next();
+}
+
 /// Schedule the next interrupt one interval from now.
 fn arm_next() {
     // Arm from *now* rather than from the previous deadline, so one slow

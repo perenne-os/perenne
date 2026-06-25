@@ -298,13 +298,19 @@ than the recent increments:
 - **Done when:** `./tools/test-qemu.ps1` writes a sector and reads it back
   (round-trip), interrupt-driven, through an unprivileged driver. QEMU-only.
 
-### Phase 6b — A minimal filesystem
+### Phase 6b — A minimal filesystem  *(done — 2026-06-25)*
 
 - **Goal:** a simple filesystem over the block device — locate and read a file
   by name from a disk image built at boot time.
 - **You learn:** the on-disk layout (superblock / directory / file extents) and
-  the block-cache boundary between a filesystem and a block device.
-- **Done when:** the kernel reads a named file's contents off the disk.
+  the block-cache boundary between a filesystem and a block device — plus, in
+  passing, a preemption-livelock fix (re-arm the timer on context switch) the
+  first long-lived preemptible driver exposed (see
+  [learning note 0023](../learning/0023-minimal-filesystem.md)).
+- **Done when:** `./tools/test-qemu.ps1` (its disk image now built by the host
+  `mkfs` tool) shows the kernel locate a file by name and read its multi-block
+  contents off the disk — the `blk` driver now a call/reply read-block server,
+  the kernel filesystem its client. QEMU-only.
 
 ### Phase 6c — The living knowledge base
 

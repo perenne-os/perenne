@@ -263,6 +263,11 @@ pub fn yield_now() {
         // satp before the switch is seamless. Execution resumes here when
         // this task is picked again.
         unsafe {
+            // Re-arm the timer for the task we are switching to, so a tick that
+            // came due while interrupts were masked for this switch is not
+            // delivered at its first instruction (which would preempt it before
+            // it runs — a livelock for a repeatedly-scheduled task).
+            crate::timer::rearm();
             crate::csr::satp_write(next_satp);
             switch_context(old, new);
         }
@@ -530,6 +535,10 @@ fn park_current(state: TaskState) {
     // kernel is mapped in both address spaces, single hart, interrupts off.
     // Execution resumes here when a peer wakes this task.
     unsafe {
+        // Re-arm the timer for the task we switch to (see yield_now): a tick
+        // that came due during this blocking switch must not preempt the new
+        // task at its first instruction.
+        crate::timer::rearm();
         crate::csr::satp_write(switch.2);
         switch_context(switch.0, switch.1);
     }
@@ -637,6 +646,47 @@ pub fn recv_message(cap_idx: usize) -> crate::task::Message {
             SCHED.with(|s| s.tasks[s.current].as_ref().unwrap().message)
         }
     }
+}
+
+/// Make a synchronous `call` (send a request, then block for the reply) from a
+/// **kernel** (S-mode) task — the client counterpart to [`recv_message`]. The
+/// `badge` crosses to the server; the return value is the server's reply badge.
+/// Reuses the same call/reply rendezvous and one-shot reply-cap machinery as
+/// the U-mode `call` syscall ([`ipc_call`]). Panics if the caller lacks the
+/// capability (a kernel-config bug).
+#[cfg(target_arch = "riscv64")]
+pub fn call_message(cap_idx: usize, badge: usize) -> usize {
+    enum K {
+        AwaitReply,
+        Queue(EndpointId),
+    }
+    let msg = Message { badge, data: [0, 0, 0] };
+    let step = SCHED.with(|s| {
+        let cur = s.current;
+        let ep = cap_lookup(&s.tasks[cur].as_ref().unwrap().caps, cap_idx)
+            .expect("call_message: caller lacks the endpoint capability");
+        match find_blocked(s, ep, IpcRole::Recv) {
+            Some(ri) => {
+                // A server is recv-blocked: hand it the request, bind us as its
+                // caller (it mints the reply cap on wake), and ready it.
+                s.tasks[ri].as_mut().unwrap().message = msg;
+                s.tasks[ri].as_mut().unwrap().caller = Some(cur);
+                s.tasks[ri].as_mut().unwrap().state = TaskState::Ready;
+                K::AwaitReply
+            }
+            None => {
+                // No server yet: queue our request; a server's recv binds us
+                // and moves us to AwaitingReply.
+                s.tasks[cur].as_mut().unwrap().message = msg;
+                K::Queue(ep)
+            }
+        }
+    });
+    match step {
+        K::AwaitReply => park_current(TaskState::AwaitingReply),
+        K::Queue(ep) => block_current(ep, IpcRole::Call),
+    }
+    SCHED.with(|s| s.tasks[s.current].as_ref().unwrap().message.badge)
 }
 
 /// Service a `send` syscall. `a0` = capability index, `a1` = badge,

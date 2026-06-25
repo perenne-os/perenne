@@ -63,6 +63,11 @@ Plain-language definitions of terms used throughout these docs. Aimed at someone
 - **DMA (direct memory access)** — a device reading/writing system memory directly, at *physical* addresses, without the CPU copying each byte. The virtqueue and its buffers live in DMA memory shared with the device.
 - **Block device** — a storage device addressed in fixed-size *sectors* (here 512 bytes) rather than as a byte stream; you read or write whole sectors by number. The disk is a block device (virtio-blk).
 - **virtio-blk** — the virtio block-device interface. Each request is a 3-descriptor chain (a header naming the operation + sector, a data buffer, and a status byte) submitted through the virtqueue.
+- **Filesystem** — the layer that turns named files into block reads/writes over a block device. Phase 6b's is minimal and read-only: it locates a file by name and reads its bytes.
+- **Superblock** — a filesystem's first block: format magic/version, the block size, and where the directory lives. The kernel reads it to find everything else.
+- **Directory entry (dirent)** — a fixed-size record mapping a file name to its on-disk location (start block + byte length). Phase 6b packs these in one directory block.
+- **Extent** — a contiguous run of blocks holding a file's data; in Phase 6b's format a file is a single extent (start block + length), so reading it is a sequential block loop.
+- **Block cache** — a small in-memory hold of recently-read disk blocks, so a filesystem can re-read a block without a fresh device request. Phase 6b's is a single block (the one resident in the shared DMA page) — the abstraction boundary between the filesystem and the block driver.
 - **UART** — the serial-port controller that turns bytes into the serial line signal; the kernel's text console.
 - **ns16550** — the ubiquitous 16550-family UART (QEMU virt and many boards), programmed via a few byte registers spaced by `reg-shift`.
 - **`THR` / `LSR` / `THRE`** — the 16550 transmit-holding register (where you write a byte), the line-status register, and its "holding register empty" bit (`0x20`) the driver polls before transmitting.

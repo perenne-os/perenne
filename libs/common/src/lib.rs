@@ -12,6 +12,8 @@
 /// future rename (ADR 0006) is a single edit.
 pub const PROJECT_NAME: &str = "Kernel (working title)";
 
+pub mod fs;
+
 #[cfg(test)]
 mod tests {
     use super::*;

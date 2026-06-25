@@ -190,20 +190,21 @@ mod bare {
             mem::build_user_space(dbu, NO_DEVICE));
         sched::grant_cap(dclient_b, DEFER_CAP, Capability::Endpoint(DEFER_EP));
 
-        // Phase 6a — block storage: a user-space virtio-blk driver. The consumer
-        // (a kernel task) recv-blocks for the self-test result before the
-        // component reports.
+        // Phase 6b — a minimal filesystem. The blk driver is now a call/reply
+        // server (recv block N -> virtio read into its identity-mapped DMA page
+        // -> reply). The kernel `fs` task is the client: it calls the server to
+        // read blocks, finds a file by name, and prints its contents off disk.
+        // Spawn the server first (lower slot) so it recv-blocks before fs calls.
         if let Some(blk) = blk_base {
             let dma_pa = mem::frame::alloc_zeroed().expect("no DMA frame for blk").0;
-            let blk_cons = sched::spawn("blkc", blk_consumer,
-                core::ptr::addr_of!(KS_BLKC) as usize + TASK_STACK);
-            sched::grant_cap(blk_cons, BLK_REPORT_CAP, Capability::Endpoint(BLK_EP));
+            // SAFETY: set once at boot before the fs task runs; single hart.
+            unsafe { BLK_DMA_PA = dma_pa; }
 
             let bu = ustack(core::ptr::addr_of!(US_BLK) as usize);
             let blkdev = sched::spawn_user("blk", blk_component, bu.1,
                 core::ptr::addr_of!(KS_BLK) as usize + TASK_STACK,
                 mem::build_virtio_space(bu, (blk, blk + 0x1000), (dma_pa, dma_pa + 0x1000)));
-            sched::grant_cap(blkdev, BLK_REPORT_CAP, Capability::Endpoint(BLK_EP));
+            sched::grant_cap(blkdev, BLK_EP_CAP, Capability::Endpoint(BLK_EP));
 
             let n = machine.virtio_mmio_count;
             let blk_irq = virtio::irq_for_base(&machine.virtio_mmio[..n], &machine.virtio_mmio_irq[..n], blk)
@@ -216,6 +217,11 @@ mod bare {
             plic::enable(blk_irq);
             // SAFETY: the trap handler and the PLIC are set up to service it.
             unsafe { csr::sie_enable_external() };
+
+            // The kernel filesystem client, holding the service endpoint cap.
+            let fs = sched::spawn("fs", fs_task,
+                core::ptr::addr_of!(KS_FS) as usize + TASK_STACK);
+            sched::grant_cap(fs, BLK_EP_CAP, Capability::Endpoint(BLK_EP));
         } else {
             println!("blk: no virtio-blk device found");
         }
@@ -305,11 +311,23 @@ mod bare {
     const DEFER_EP: usize = 3;
     const DEFER_CAP: usize = 0;
 
-    /// The endpoint the blk component reports its self-test result on; the cap
-    /// slot it (and the consumer) hold it in; and the slot of its Interrupt cap.
+    /// The blk service endpoint (the kernel FS calls it; the blk server recvs).
     const BLK_EP: usize = 4;
-    const BLK_REPORT_CAP: usize = 0;
+    /// blk cap slots: 0 = the service endpoint, 1 = its Interrupt cap, 2 = the
+    /// one-shot Reply cap the server's recv mints per call.
+    const BLK_EP_CAP: usize = 0;
     const BLK_IRQ_CAP: usize = 1;
+    const BLK_REPLY_SLOT: usize = 2;
+
+    /// Physical address of the blk DMA frame (identity-mapped); the FS reads
+    /// sector bytes from `BLK_DMA_PA + BLK_DATA_OFF`. Set by `kmain`.
+    static mut BLK_DMA_PA: usize = 0;
+    /// The block currently resident in the DMA data page (the one-block cache);
+    /// `-1` = none. Re-reading the same block skips the IPC round-trip.
+    static mut FS_CACHED_BLOCK: i64 = -1;
+    /// Kernel buffer a read file is copied into (out of the reused DMA page).
+    const FS_FILEBUF_LEN: usize = 4096;
+    static mut FS_FILEBUF: [u8; FS_FILEBUF_LEN] = [0; FS_FILEBUF_LEN];
 
     /// Per-task kernel stack size (also the trap stack a U-mode task's
     /// traps land on). 16 KiB; per-task guard pages stay deferred.
@@ -327,7 +345,7 @@ mod bare {
     static mut KS_DCLIENTA: KStack = [0; TASK_STACK];
     static mut KS_DCLIENTB: KStack = [0; TASK_STACK];
     static mut KS_BLK: KStack = [0; TASK_STACK];
-    static mut KS_BLKC: KStack = [0; TASK_STACK];
+    static mut KS_FS: KStack = [0; TASK_STACK];
     static mut KS_IDLE: KStack = [0; TASK_STACK];
 
     /// The PQC consumer runs ML-KEM-768, which in a debug build needs a much
@@ -632,12 +650,12 @@ mod bare {
             virtio::STATUS_ACK | virtio::STATUS_DRIVER | virtio::STATUS_FEATURES_OK | virtio::STATUS_DRIVER_OK);
     }
 
-    /// Issue one virtio-blk request for sector 0 (`write` = T_OUT else T_IN),
+    /// Issue one virtio-blk request for `sector` (`write` = T_OUT else T_IN),
     /// publishing the 3-descriptor chain and blocking on the device IRQ.
     /// Returns the device status byte (0 = OK). `avail_idx` is the current
     /// available-ring index.
     #[inline(always)]
-    unsafe fn blk_req(mmio: usize, dma: usize, write: bool, avail_idx: u16) -> u8 {
+    unsafe fn blk_req(mmio: usize, dma: usize, write: bool, avail_idx: u16, sector: u64) -> u8 {
         let desc = dma + virtio::VQ_DESC_OFF;
         let avail = dma + virtio::VQ_AVAIL_OFF;
         let hdr = dma + virtio::BLK_HDR_OFF;
@@ -646,7 +664,7 @@ mod bare {
         // request header
         dma_w32(hdr, if write { virtio::BLK_T_OUT } else { virtio::BLK_T_IN });
         dma_w32(hdr + 4, 0);
-        dma_w64(hdr + 8, 0); // sector 0
+        dma_w64(hdr + 8, sector);
         dma_w8(status, 0xff); // sentinel
         // desc 0: header (device reads)
         dma_w64(desc, hdr as u64);
@@ -1008,12 +1026,12 @@ mod bare {
         unsafe { sys_exit(sys_call(DEFER_CAP, 0xb1)) }
     }
 
-    /// The blk component (user-space virtio-blk driver). The kernel maps the
-    /// device's MMIO + a zeroed DMA frame into it (a1 = mmio, a2 = dma) and
-    /// grants an Interrupt cap for `wait_irq`. It self-tests a sector
-    /// round-trip: fill the data buffer with a pattern, WRITE sector 0, zero the
-    /// buffer, READ sector 0, and verify the pattern was restored. Reports the
-    /// result with a one-way send to the blk consumer.
+    /// The blk component (user-space virtio-blk driver), now a call/reply
+    /// **server**. The kernel maps the device's MMIO + a zeroed DMA frame into
+    /// it (a1 = mmio, a2 = dma) and grants an Interrupt cap for `wait_irq`. It
+    /// loops: receive a block number (the call badge), read that sector into the
+    /// identity-mapped DMA data page, and reply with the device status byte
+    /// (0 = OK). The kernel FS reads the data straight from the DMA page.
     #[no_mangle]
     #[link_section = ".user_text"]
     extern "C" fn blk_component() -> ! {
@@ -1025,47 +1043,99 @@ mod bare {
                 m = out(reg) mmio, d = out(reg) dma,
                 options(nomem, nostack, preserves_flags));
         }
-        let data = dma + virtio::BLK_DATA_OFF;
         // SAFETY: mmio + dma are mapped RW-U into this task; the sequence is the
-        // spike-verified virtio-blk bring-up.
+        // spike-verified virtio-blk bring-up, then a recv/read/reply loop.
         unsafe {
             virtio_queue_init(mmio, dma);
-            // Fill the data buffer with a known pattern and WRITE sector 0.
-            let mut i = 0;
-            while i < virtio::BLK_SECTOR_SIZE {
-                dma_w8(data + i, (i & 0xff) as u8);
-                i += 1;
+            let mut avail_idx: u16 = 0;
+            loop {
+                let block = sys_recv(BLK_EP_CAP, BLK_REPLY_SLOT); // badge = block #
+                let status = blk_req(mmio, dma, false, avail_idx, block as u64);
+                avail_idx = avail_idx.wrapping_add(1);
+                sys_reply(BLK_REPLY_SLOT, status as usize);
             }
-            let wst = blk_req(mmio, dma, true, 0);
-            // Zero the buffer, then READ sector 0 back into it.
-            i = 0;
-            while i < virtio::BLK_SECTOR_SIZE {
-                dma_w8(data + i, 0);
-                i += 1;
-            }
-            let rst = blk_req(mmio, dma, false, 1);
-            // Verify the pattern was restored (so both write and read hit disk).
-            let mut ok = wst == 0 && rst == 0;
-            i = 0;
-            while ok && i < virtio::BLK_SECTOR_SIZE {
-                if dma_r8(data + i) != (i & 0xff) as u8 {
-                    ok = false;
-                }
-                i += 1;
-            }
-            sys_send4(BLK_REPORT_CAP, if ok { 1 } else { 0 }, 0, 0, 0);
-            sys_exit(0)
         }
     }
 
-    /// The blk result consumer (kernel task): receives the blk component's
-    /// self-test result and prints it. Then idles (kernel tasks never return).
-    extern "C" fn blk_consumer() -> ! {
-        let m = sched::recv_message(BLK_REPORT_CAP);
-        if m.badge == 1 {
-            println!("blk: sector round-trip ok");
-        } else {
-            println!("blk: sector round-trip FAILED");
+    /// The FS↔device boundary: read block `n` via the blk server into the
+    /// identity-mapped DMA data page and return a view of it. `None` on a device
+    /// I/O error. A trivial one-block cache skips the IPC if `n` is resident.
+    fn fs_read_block(n: u32) -> Option<&'static [u8]> {
+        // SAFETY: BLK_DMA_PA is the kernel-allocated, identity-mapped DMA frame;
+        // the slice addresses real RAM. Single hart; the cache state is ours.
+        unsafe {
+            if FS_CACHED_BLOCK != n as i64 {
+                let status = sched::call_message(BLK_EP_CAP, n as usize);
+                if status != 0 {
+                    FS_CACHED_BLOCK = -1;
+                    return None;
+                }
+                FS_CACHED_BLOCK = n as i64;
+            }
+            Some(core::slice::from_raw_parts(
+                (BLK_DMA_PA + virtio::BLK_DATA_OFF) as *const u8,
+                virtio::BLK_SECTOR_SIZE,
+            ))
+        }
+    }
+
+    /// Locate `name` in the filesystem and copy its contents into `FS_FILEBUF`.
+    /// Returns the file's contents on success, or `None` (with a logged reason).
+    fn fs_read_file(name: &str) -> Option<&'static [u8]> {
+        use kernel_common::fs;
+        let sb = match fs::Superblock::decode(fs_read_block(0)?) {
+            Some(sb) => sb,
+            None => {
+                println!("fs: bad superblock");
+                return None;
+            }
+        };
+        // Copy the directory block out before later reads clobber the DMA page.
+        let mut dir = [0u8; fs::BLOCK_SIZE];
+        dir.copy_from_slice(fs_read_block(sb.dir_block)?);
+        let ent = match fs::lookup(&dir, sb.dir_entries, name) {
+            Some(e) => e,
+            None => {
+                println!("fs: file '{}' not found", name);
+                return None;
+            }
+        };
+        let len = ent.byte_len as usize;
+        if len > FS_FILEBUF_LEN {
+            println!("fs: file '{}' too large ({} bytes)", name, len);
+            return None;
+        }
+        let nblocks = fs::block_count(ent.byte_len) as usize;
+        // SAFETY: single hart; FS_FILEBUF is ours for the duration of this read.
+        unsafe {
+            for i in 0..nblocks {
+                let blk = match fs_read_block(ent.start_block + i as u32) {
+                    Some(b) => b,
+                    None => {
+                        println!("fs: block read error");
+                        return None;
+                    }
+                };
+                let off = i * fs::BLOCK_SIZE;
+                let take = core::cmp::min(fs::BLOCK_SIZE, len - off);
+                FS_FILEBUF[off..off + take].copy_from_slice(&blk[..take]);
+            }
+            Some(&FS_FILEBUF[..len])
+        }
+    }
+
+    /// The kernel filesystem task: reads a known file by name off the disk
+    /// (through the blk server) and prints its length and contents, then idles.
+    extern "C" fn fs_task() -> ! {
+        let name = "KB-0005";
+        match fs_read_file(name) {
+            Some(bytes) => {
+                println!("fs: read '{}' ({} bytes)", name, bytes.len());
+                if let Ok(text) = core::str::from_utf8(bytes) {
+                    println!("{}", text);
+                }
+            }
+            None => println!("fs: read of '{}' failed", name),
         }
         loop {
             sched::yield_now();

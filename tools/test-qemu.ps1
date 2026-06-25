@@ -56,10 +56,20 @@ if (-not (Test-Path $kernelElf)) {
 $serialLog = Join-Path ([System.IO.Path]::GetTempPath()) "kernel-qemu-serial.log"
 if (Test-Path $serialLog) { Remove-Item $serialLog -Force }
 
-# A scratch raw disk image (64 KiB of zeros) for the virtio-blk driver to
-# write a sector to and read it back.
+# A filesystem disk image (Phase 6b) for the kernel to read a named file from,
+# built by the host `mkfs` tool from the shared on-disk format.
+cargo build --manifest-path "$repo/Cargo.toml" -p mkfs
+$mkfs = Join-Path $repo "target/debug/mkfs.exe"
+if (-not (Test-Path $mkfs)) {
+    Write-Host "BOOT TEST FAIL: mkfs not produced at $mkfs" -ForegroundColor Red
+    exit 1
+}
 $diskImg = Join-Path ([System.IO.Path]::GetTempPath()) "kernel-qemu-disk.img"
-[System.IO.File]::WriteAllBytes($diskImg, (New-Object byte[] 65536))
+& $mkfs $diskImg
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "BOOT TEST FAIL: mkfs failed to build the image" -ForegroundColor Red
+    exit 1
+}
 
 # Read a file QEMU may still hold open for writing (share ReadWrite).
 function Read-LogText($path) {
@@ -95,7 +105,8 @@ $mustMatch = @(
     "sched: task 'dclientB' exited \(code 433\)",
     "ipc: 'rogue' send rejected \(no capability\)",
     "irq: external IRQ \d+ woke",
-    "blk: sector round-trip ok",
+    "fs: read 'KB-0005'",
+    "FS-6B-TAIL-OK",
     "entropy: pool seeded from virtio-rng",
     "entropy: pool serves on demand \(draws differ\)",
     "entropy: pool reseeded from virtio-rng",
