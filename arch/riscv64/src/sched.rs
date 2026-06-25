@@ -263,6 +263,11 @@ pub fn yield_now() {
         // satp before the switch is seamless. Execution resumes here when
         // this task is picked again.
         unsafe {
+            // Re-arm the timer for the task we are switching to, so a tick that
+            // came due while interrupts were masked for this switch is not
+            // delivered at its first instruction (which would preempt it before
+            // it runs — a livelock for a repeatedly-scheduled task).
+            crate::timer::rearm();
             crate::csr::satp_write(next_satp);
             switch_context(old, new);
         }
@@ -530,6 +535,10 @@ fn park_current(state: TaskState) {
     // kernel is mapped in both address spaces, single hart, interrupts off.
     // Execution resumes here when a peer wakes this task.
     unsafe {
+        // Re-arm the timer for the task we switch to (see yield_now): a tick
+        // that came due during this blocking switch must not preempt the new
+        // task at its first instruction.
+        crate::timer::rearm();
         crate::csr::satp_write(switch.2);
         switch_context(switch.0, switch.1);
     }
