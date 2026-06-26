@@ -312,16 +312,24 @@ than the recent increments:
   contents off the disk — the `blk` driver now a call/reply read-block server,
   the kernel filesystem its client. QEMU-only.
 
-### Phase 6c — The living knowledge base
+### Phase 6c — The living knowledge base  *(done — 2026-06-25)*
 
 - **Goal:** the self-healer loads `knowledge-base/entries/*.md` from the
   filesystem, parses them, and diagnoses a contained crash against the **real,
-  runtime** knowledge base instead of the compiled-in `KB-0005` — and (stretch)
-  records a newly-seen issue back to disk.
+  runtime** knowledge base instead of the compiled-in `KB-0005`.
 - **You learn:** closing the self-healing loop with persistence — the organism
-  reads and grows its own memory.
-- **Done when:** a contained crash is diagnosed against a KB entry **loaded from
-  disk**, proving the organism is no longer hardcoded.
+  reads its own memory at boot, while diagnosis stays a pure in-kernel lookup
+  (only its *data* moved to disk); plus where the code/disk line sits (the
+  kernel decodes a raw trap into a token; the meaning keyed by that token is on
+  disk) and reading the least that answers the question when each I/O is costly
+  (see [learning note 0024](../learning/0024-living-knowledge-base.md)).
+- **Done when:** ✅ a contained crash is diagnosed against a KB entry **loaded
+  from disk** — the diagnosis prints `KB-0005`'s playbook text read off the
+  image, selected by its `match-cause` token — proving the organism is no
+  longer hardcoded. A new `match-cause` schema field + a `kernel-common::kb`
+  frontmatter parser + a boot-time KB loader; `mkfs` packs the
+  runtime-matchable entries; patients gate on the load. Write-back (recording a
+  new issue to disk) is deferred — it needs a writable FS layer. QEMU-only.
 
 ## Phase 7+ — Breadth
 

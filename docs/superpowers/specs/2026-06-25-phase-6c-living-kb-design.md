@@ -144,21 +144,27 @@ not because any code names KB-0005.
 
 Stop writing synthetic demo content. Read the real
 `knowledge-base/entries/*.md` (located via `CARGO_MANIFEST_DIR`), name each
-file by its id, and pack them all (KB-0001..0005 fit in the single directory
-block — `DIRENTS_PER_BLOCK = 8`). The image now carries the actual knowledge
-base; the loader filters by token.
+file by its id, and pack the **runtime-matchable** ones — those whose
+frontmatter declares a `match-cause` token (filtering by token, via
+`kernel_common::kb::parse`, not by name, so both sides stay data-driven).
+Today that is just `KB-0005` (KB-0001..0004 are dev-environment issues with no
+runtime fault class). Packing only the matchable entries also keeps the image
+small and the loader's boot-time read count low — see the note in §8.
 
 ### 4.4 KB-loader — `kernel/src/main.rs` (replaces `fs_task`)
 
 The existing `fs_task` becomes the loader. It:
 1. reads the superblock + directory block, enumerates the `dir_entries`;
-2. for each, `fs_read_file(name)` → `kb::parse` → `heal::install` if tokened;
-   logs a one-line summary (`heal: loaded N KB entr… from disk`);
+2. for each, reads only the entry's **frontmatter head** (first
+   `KB_HEAD_BLOCKS = 2` blocks, directly from its extent — no per-file
+   superblock/dir re-read) → `kb::parse` → `heal::install` if tokened; logs a
+   one-line summary (`heal: loaded N KB entr… from disk (scanned M)`);
 3. releases the gated patients (§5), then idles as before.
 
-`fs_read_file` and the one-block cache are reused unchanged. The directory
-enumeration adds a tiny `fs::dir_name_at(dir_bytes, i)` helper (or reuses
-`DirEntry::decode`) in `libs/common::fs`.
+The one-block cache is reused unchanged. The directory enumeration adds a tiny
+`fs::dir_entry_at(dir_bytes, i)` helper + `DirEntry::name_str()` in
+`libs/common::fs`. Reading only the head (not the whole multi-block entry)
+keeps the read count small — see §8.
 
 ## 5. Ordering: gating the patients until the KB is loaded
 
@@ -205,12 +211,26 @@ The blk-server rendezvous already self-synchronizes (a caller blocks in the
   runtime needs only id/title/playbook/match-cause; the rest stays
   human-only.
 
-## 8. Risks
+## 8. Risks and the read-count constraint
 
-- **Buffer sizes:** a KB file must fit `FS_FILEBUF_LEN` (4096; KB-0005.md is
-  ~1.5 KB) and its fields must fit the fixed `KnownIssue` buffers — the parser
+- **One device-IRQ wait per block (the shaping constraint):** the `blk` server
+  waits for a completion interrupt per block, and on this QEMU PLIC a fast
+  completion that asserts while the source is masked in-service is only
+  recovered on the next timer tick — so reads run ~**one block per tick**. 6b's
+  ~4 reads hid this; 6c must keep the count low or it blows the smoke-test
+  budget. Two mitigations (both implemented): the loader reads only each
+  entry's **frontmatter head** (`KB_HEAD_BLOCKS = 2`, enough for
+  id/title/match-cause/first-playbook), and `mkfs` packs only the
+  runtime-matchable entries. Result: ~4 boot reads, like 6b. Fixing the IRQ
+  latency itself is out of scope (it would touch the shared `wait_irq`/PLIC
+  path the entropy driver also depends on).
+- **Frontmatter must sit in the first `KB_HEAD_BLOCKS` blocks** (it does, by
+  convention — id/title/match-cause/playbook are at the top). An entry whose
+  required fields fall past the head parses to `None` and is skipped + logged.
+- **Buffer sizes:** the frontmatter head fits `FS_FILEBUF_LEN` (4096) and the
+  parsed fields fit the fixed `KnownIssue` buffers — the parser
   truncates/round-trips within bounds, never overflows.
-- **Directory growth:** packing all entries must stay within the single
-  directory block (≤ 8 files); asserted by `mkfs`.
+- **Directory growth:** packed entries must stay within the single directory
+  block (≤ 8 files); asserted by `mkfs::build_image`.
 - **Parse fragility:** the scanner tolerates only the known frontmatter shape;
-  unpar+seable entries are skipped + logged, never fatal.
+  unparseable entries are skipped + logged, never fatal.
