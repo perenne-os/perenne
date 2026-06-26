@@ -40,6 +40,9 @@ pub enum Cause {
     Breakpoint,
     /// Supervisor timer interrupt (interrupt code 5).
     SupervisorTimer,
+    /// Illegal instruction executed (exception code 2) — e.g. a U-mode task
+    /// that ran `unimp`. A distinct fault class from a page fault.
+    IllegalInstruction,
     /// Instruction fetch from an unmapped/non-executable page (code 12).
     InstructionPageFault,
     /// Load from an unmapped/unreadable page (code 13).
@@ -64,6 +67,7 @@ pub fn decode(scause: usize) -> Cause {
     let interrupt = scause & INTERRUPT_BIT != 0;
     let code = scause & !INTERRUPT_BIT;
     match (interrupt, code) {
+        (false, 2) => Cause::IllegalInstruction,
         (false, 3) => Cause::Breakpoint,
         (true, 5) => Cause::SupervisorTimer,
         (true, 9) => Cause::SupervisorExternal,
@@ -101,8 +105,10 @@ mod tests {
 
     #[test]
     fn unknown_exception_is_not_fatal_to_decode() {
-        // Exception code 2 = illegal instruction; unhandled in 2a.
-        assert_eq!(decode(2), Cause::Unknown { interrupt: false, code: 2 });
+        // Exception code 24 is in the reserved/custom range — unhandled, so it
+        // decodes to `Unknown` rather than panicking. (Code 2, illegal
+        // instruction, is now a named cause — see `decodes_illegal_instruction`.)
+        assert_eq!(decode(24), Cause::Unknown { interrupt: false, code: 24 });
     }
 
     #[test]
@@ -147,6 +153,7 @@ mod tests {
 
     #[test]
     fn decodes_page_faults() {
+        assert_eq!(decode(2), Cause::IllegalInstruction);
         assert_eq!(decode(12), Cause::InstructionPageFault);
         assert_eq!(decode(13), Cause::LoadPageFault);
         assert_eq!(decode(15), Cause::StorePageFault);
@@ -429,6 +436,12 @@ extern "C" fn trap_handler(frame: &mut TrapFrame) {
             // A U-mode task reached for memory it does not own: contain it.
             crate::sched::exit_current(crate::task::ExitReason::Killed(cause));
         }
+        Cause::IllegalInstruction if from_user(frame) => {
+            // A U-mode task executed an illegal instruction: contain it, just
+            // like a page fault — a different symptom class for the organism.
+            crate::sched::exit_current(crate::task::ExitReason::Killed(cause));
+        }
+        Cause::IllegalInstruction => fatal("illegal instruction", frame),
         Cause::InstructionPageFault => fatal("instruction page fault", frame),
         Cause::LoadPageFault => fatal("load page fault", frame),
         Cause::StorePageFault => {

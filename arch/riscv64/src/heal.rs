@@ -92,6 +92,12 @@ impl KnownIssue {
 static mut KB_TABLE: [Option<KnownIssue>; MAX_ISSUES] = [None; MAX_ISSUES];
 static mut KB_COUNT: usize = 0;
 
+/// A single pending novel cause token, latched by the crash path
+/// (`note_unmatched`) and drained by the KB-writer task (`take_novel`). One
+/// slot is enough: a token is recorded at most once (once installed it matches,
+/// so `note_unmatched` never re-latches it).
+static mut NOVEL_TOKEN: Option<&'static str> = None;
+
 /// Install a parsed KB record into the runtime table. Returns false if the
 /// table is full. Called only by the boot-time loader.
 pub fn install(id: &str, title: &str, playbook: &str, match_cause: Option<&str>) -> bool {
@@ -116,6 +122,50 @@ pub fn loaded_count() -> usize {
     unsafe { core::ptr::read(core::ptr::addr_of!(KB_COUNT)) }
 }
 
+/// Called from the crash path when `diagnose` found no match. If the kernel can
+/// still *name* the cause (it has a token) but no entry is installed for it, the
+/// crash is novel-but-recognizable: latch the token for the KB-writer to record.
+/// Pure aside from the single-slot latch; safe in the interrupts-off crash path
+/// (no I/O, no blocking).
+pub fn note_unmatched(cause: Cause) {
+    if let Some(token) = cause_token(cause) {
+        // SAFETY: single hart; crash path is not re-entrant. Don't clobber an
+        // un-drained token.
+        unsafe {
+            if core::ptr::read(core::ptr::addr_of!(NOVEL_TOKEN)).is_none() {
+                core::ptr::write(core::ptr::addr_of_mut!(NOVEL_TOKEN), Some(token));
+            }
+        }
+    }
+}
+
+/// Drain the pending novel token, if any. Called by the KB-writer task.
+pub fn take_novel() -> Option<&'static str> {
+    // SAFETY: single hart; the writer task is the only drainer.
+    unsafe {
+        let t = core::ptr::read(core::ptr::addr_of!(NOVEL_TOKEN));
+        core::ptr::write(core::ptr::addr_of_mut!(NOVEL_TOKEN), None);
+        t
+    }
+}
+
+/// The largest `KB-NNNN` number installed in the runtime table (0 if none) — so
+/// the writer can mint the next id deterministically.
+pub fn max_kb_number() -> u32 {
+    // SAFETY: single hart; read of the boot-populated table.
+    let table = unsafe { &*core::ptr::addr_of!(KB_TABLE) };
+    let mut max = 0u32;
+    for issue in table.iter().flatten() {
+        let id = issue.id();
+        if let Some(num) = id.strip_prefix("KB-").and_then(|d| d.parse::<u32>().ok()) {
+            if num > max {
+                max = num;
+            }
+        }
+    }
+    max
+}
+
 /// Map a raw trap cause to a stable, knowledge-base-matchable token. This is
 /// the kernel's job (it owns trap decoding); the *knowledge* keyed by the
 /// token lives on disk. Pure, host-tested.
@@ -124,6 +174,7 @@ fn cause_token(cause: Cause) -> Option<&'static str> {
         Cause::LoadPageFault | Cause::StorePageFault | Cause::InstructionPageFault => {
             Some("page-fault")
         }
+        Cause::IllegalInstruction => Some("illegal-instruction"),
         _ => None,
     }
 }
@@ -166,6 +217,21 @@ mod tests {
         assert_eq!(cause_token(Cause::StorePageFault), Some("page-fault"));
         assert_eq!(cause_token(Cause::InstructionPageFault), Some("page-fault"));
         assert_eq!(cause_token(Cause::Breakpoint), None);
+    }
+
+    #[test]
+    fn illegal_instruction_maps_to_its_token() {
+        assert_eq!(cause_token(Cause::IllegalInstruction), Some("illegal-instruction"));
+    }
+
+    #[test]
+    fn max_kb_number_reads_the_largest_installed_id() {
+        // install() mutates process-global state; this test runs in isolation
+        // (no other test installs into or reads the global table).
+        assert_eq!(max_kb_number(), 0);
+        assert!(install("KB-0005", "t", "p", Some("page-fault")));
+        assert!(install("KB-0003", "t", "p", Some("x")));
+        assert_eq!(max_kb_number(), 5);
     }
 
     #[test]
