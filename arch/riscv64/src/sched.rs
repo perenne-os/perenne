@@ -423,7 +423,12 @@ pub fn exit_current(reason: ExitReason) -> ! {
                         "heal: diagnosed {} ({}) -> playbook: {}",
                         issue.id(), issue.title(), issue.playbook()
                     ),
-                    None => crate::println!("heal: no known issue for {cause:?} (recorded for triage)"),
+                    None => {
+                        crate::println!("heal: no known issue for {cause:?} (recording for write-back)");
+                        // Phase 7: latch the cause for the KB-writer to record
+                        // to disk, so a later boot recognizes it.
+                        crate::heal::note_unmatched(cause);
+                    }
                 }
                 // Phase 5b: if this is a restartable component, notify a
                 // user-space healer waiting on the crash endpoint so it can
