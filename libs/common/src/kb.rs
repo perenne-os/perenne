@@ -61,6 +61,33 @@ pub fn parse(bytes: &[u8]) -> Option<KbRecord<'_>> {
     Some(KbRecord { id: id?, title: title?, playbook: playbook?, match_cause })
 }
 
+/// Emit a KB entry document that `parse` round-trips, into `out`. Returns the
+/// byte length written, or `None` if `out` is too small. The inverse of
+/// `parse` for the runtime fields — so what the self-healer writes to disk is
+/// provably what a later boot reads back. Strings are emitted double-quoted
+/// (matching the schema and what `parse`'s `clean` strips); callers pass
+/// already-sane ASCII values (no embedded quotes/newlines).
+pub fn serialize(id: &str, title: &str, playbook: &str, match_cause: &str, out: &mut [u8]) -> Option<usize> {
+    let mut n = 0usize;
+    let mut put = |s: &str| -> Option<()> {
+        let b = s.as_bytes();
+        if n + b.len() > out.len() {
+            return None;
+        }
+        out[n..n + b.len()].copy_from_slice(b);
+        n += b.len();
+        Some(())
+    };
+    put("---\n")?;
+    put("id: ")?; put(id)?; put("\n")?;
+    put("title: \"")?; put(title)?; put("\"\n")?;
+    put("match-cause: ")?; put(match_cause)?; put("\n")?;
+    put("playbook:\n")?;
+    put("  - \"")?; put(playbook)?; put("\"\n")?;
+    put("---\n")?;
+    Some(n)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -99,6 +126,30 @@ verification: \"It works\"\n\
     #[test]
     fn rejects_a_file_without_frontmatter() {
         assert!(parse(b"no frontmatter here").is_none());
+    }
+
+    #[test]
+    fn serialize_round_trips_through_parse() {
+        let mut buf = [0u8; 512];
+        let n = serialize(
+            "KB-0006",
+            "Observed fault: illegal-instruction (auto-recorded)",
+            "Restart the component, up to a bounded number of retries.",
+            "illegal-instruction",
+            &mut buf,
+        )
+        .expect("serializes within the buffer");
+        let r = parse(&buf[..n]).expect("the emitted document parses");
+        assert_eq!(r.id, "KB-0006");
+        assert_eq!(r.title, "Observed fault: illegal-instruction (auto-recorded)");
+        assert_eq!(r.playbook, "Restart the component, up to a bounded number of retries.");
+        assert_eq!(r.match_cause, Some("illegal-instruction"));
+    }
+
+    #[test]
+    fn serialize_reports_none_when_buffer_too_small() {
+        let mut tiny = [0u8; 8];
+        assert!(serialize("KB-0006", "t", "p", "illegal-instruction", &mut tiny).is_none());
     }
 
     #[test]
