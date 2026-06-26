@@ -105,8 +105,9 @@ $mustMatch = @(
     "sched: task 'dclientB' exited \(code 433\)",
     "ipc: 'rogue' send rejected \(no capability\)",
     "irq: external IRQ \d+ woke",
-    "fs: read 'KB-0005'",
-    "FS-6B-TAIL-OK",
+    "heal: loaded \d+ KB entr",
+    "heal: diagnosed KB-0005 \(User-space component terminated by a fatal fault\)",
+    "playbook: Restart the component, up to a bounded number of retries",
     "entropy: pool seeded from virtio-rng",
     "entropy: pool serves on demand \(draws differ\)",
     "entropy: pool reseeded from virtio-rng",
@@ -115,7 +116,6 @@ $mustMatch = @(
     "rng: served 32 bytes to 'rnguser'",
     "sched: task 'rnguser' exited \(code 0\)",
     "sched: task 'flaky' killed by LoadPageFault",
-    "heal: diagnosed KB-0005",
     "sched: task 'transient' killed by LoadPageFault",
     "heal: restarted 'transient' \(attempt 1\)",
     "sched: task 'transient' exited \(code 0\)",
@@ -139,7 +139,7 @@ finally {
 }
 
 if ($missing.Count -eq 0) {
-    Write-Host "BOOT TEST PASS: 2a + 2b + 3c ML-KEM + 4a device-tree (192 MiB) + 4b ns16550 console + the first user-space component (ADR 0007): an RTC driver serves the live clock over capability-checked IPC; a rogue is refused; Phase 5a self-healing: a contained component crash is deterministically diagnosed (KB-0005); and Phase 5b the caged fix: a user-space healer restarts a 'transient' component (it recovers) while 'flaky' is bounded and flagged; and a virtio-rng entropy component feeds real device entropy into a reseedable kernel entropy pool (ChaCha20 CSPRNG) that keys ML-KEM on demand (retiring the fixed seed) and is drawn on by a U-mode component via a capability-gated getrandom syscall; the entropy component is interrupt-driven (it blocks on its device IRQ via the PLIC, woken by the kernel's external-interrupt handler); and a deferrer server holds two calls in flight and replies out of order via one-shot reply capabilities - all while the system keeps running." -ForegroundColor Green
+    Write-Host "BOOT TEST PASS: 2a + 2b + 3c ML-KEM + 4a device-tree (192 MiB) + 4b ns16550 console + the first user-space component (ADR 0007): an RTC driver serves the live clock over capability-checked IPC; a rogue is refused; Phase 5a self-healing: a contained component crash is deterministically diagnosed (KB-0005); and Phase 5b the caged fix: a user-space healer restarts a 'transient' component (it recovers) while 'flaky' is bounded and flagged; and a virtio-rng entropy component feeds real device entropy into a reseedable kernel entropy pool (ChaCha20 CSPRNG) that keys ML-KEM on demand (retiring the fixed seed) and is drawn on by a U-mode component via a capability-gated getrandom syscall; the entropy component is interrupt-driven (it blocks on its device IRQ via the PLIC, woken by the kernel's external-interrupt handler); and a deferrer server holds two calls in flight and replies out of order via one-shot reply capabilities; and Phase 6c the living knowledge base: the self-healer reads knowledge-base/entries/*.md off the disk at boot, parses each entry, and diagnoses the contained crash against the on-disk KB-0005 (selected by its match-cause token) - the organism is no longer hardcoded - all while the system keeps running." -ForegroundColor Green
     exit 0
 } else {
     Write-Host "BOOT TEST FAIL: missing within 30s: $($missing -join ', '). Serial output:" -ForegroundColor Red
