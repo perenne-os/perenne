@@ -149,6 +149,48 @@ pub fn lookup(dir_bytes: &[u8], count: u32, name: &str) -> Option<DirEntry> {
     None
 }
 
+/// Spare blocks `mkfs` pads the image with past `total_blocks`, so the in-kernel
+/// writer has device capacity to append entries into (free space, as a real FS
+/// keeps). Capacity overflow is otherwise caught safely at write time by the
+/// device status, so `append_plan` does not itself bound on capacity.
+pub const SPARE_BLOCKS: u32 = 8;
+
+/// The result of planning an append: where the new file's data goes, the
+/// updated directory block (existing entries plus the new one), and the updated
+/// superblock. Pure — the caller performs the actual block writes.
+#[derive(Debug, Clone, Copy)]
+pub struct AppendPlan {
+    pub start_block: u32,
+    pub new_superblock: Superblock,
+    pub dir_block: [u8; BLOCK_SIZE],
+}
+
+/// Plan appending a `byte_len`-byte file named `name` to the volume described by
+/// `sb` + `dir_bytes`. The file is placed at the current end of the volume; one
+/// directory entry is appended. Returns `None` if the single directory block is
+/// already full (the format keeps one directory block).
+pub fn append_plan(sb: &Superblock, dir_bytes: &[u8], name: &str, byte_len: u32) -> Option<AppendPlan> {
+    let count = sb.dir_entries as usize;
+    if count >= DIRENTS_PER_BLOCK {
+        return None; // one directory block only
+    }
+    let start_block = sb.total_blocks;
+    let nblocks = block_count(byte_len);
+
+    let mut dir_block = [0u8; BLOCK_SIZE];
+    let copy = core::cmp::min(dir_bytes.len(), BLOCK_SIZE);
+    dir_block[..copy].copy_from_slice(&dir_bytes[..copy]);
+    let off = count * DIRENT_SIZE;
+    DirEntry::new(name, start_block, byte_len).encode(&mut dir_block[off..off + DIRENT_SIZE]);
+
+    let new_superblock = Superblock {
+        dir_entries: sb.dir_entries + 1,
+        total_blocks: sb.total_blocks + nblocks,
+        ..*sb
+    };
+    Some(AppendPlan { start_block, new_superblock, dir_block })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -217,5 +259,41 @@ mod tests {
         assert_eq!(lookup(&dir, 2, "beta").unwrap().byte_len, 20);
         assert!(lookup(&dir, 2, "gamma").is_none());
         assert!(lookup(&dir, 0, "alpha").is_none()); // count gates the scan
+    }
+
+    #[test]
+    fn append_plan_places_a_new_file_at_end_of_volume() {
+        // One file already present; directory has 1 entry; volume used 3 blocks.
+        let sb = Superblock {
+            magic: FS_MAGIC, version: FS_VERSION, block_size: BLOCK_SIZE as u32,
+            dir_block: DIR_BLOCK, dir_entries: 1, total_blocks: 3,
+        };
+        let mut dir = [0u8; BLOCK_SIZE];
+        DirEntry::new("KB-0005", 2, 400).encode(&mut dir[0..DIRENT_SIZE]);
+
+        let plan = append_plan(&sb, &dir, "KB-0006", 200).expect("appends");
+        // new file lands at the current end of the volume
+        assert_eq!(plan.start_block, 3);
+        // superblock grows by one entry and by ceil(200/512)=1 block
+        assert_eq!(plan.new_superblock.dir_entries, 2);
+        assert_eq!(plan.new_superblock.total_blocks, 4);
+        // the new dirent is the second entry and round-trips
+        let e = DirEntry::decode(&plan.dir_block[DIRENT_SIZE..2 * DIRENT_SIZE]);
+        assert!(e.name_is("KB-0006"));
+        assert_eq!(e.start_block, 3);
+        assert_eq!(e.byte_len, 200);
+        // the existing entry is preserved
+        let e0 = DirEntry::decode(&plan.dir_block[0..DIRENT_SIZE]);
+        assert!(e0.name_is("KB-0005"));
+    }
+
+    #[test]
+    fn append_plan_refuses_when_directory_block_is_full() {
+        let sb = Superblock {
+            magic: FS_MAGIC, version: FS_VERSION, block_size: BLOCK_SIZE as u32,
+            dir_block: DIR_BLOCK, dir_entries: DIRENTS_PER_BLOCK as u32, total_blocks: 50,
+        };
+        let dir = [0u8; BLOCK_SIZE];
+        assert!(append_plan(&sb, &dir, "KB-0099", 10).is_none());
     }
 }
