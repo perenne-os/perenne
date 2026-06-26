@@ -1122,43 +1122,27 @@ mod bare {
         }
     }
 
-    /// Locate `name` in the filesystem and copy its contents into `FS_FILEBUF`.
-    /// Returns the file's contents on success, or `None` (with a logged reason).
-    fn fs_read_file(name: &str) -> Option<&'static [u8]> {
+    /// Number of leading blocks of a KB entry the loader reads — enough to
+    /// cover the YAML frontmatter (id/title/match-cause/first-playbook), which
+    /// by convention sits at the very top of the file. Each block costs one
+    /// blk-server round-trip (one device-IRQ wait), so we read only the head
+    /// rather than the whole multi-block entry.
+    const KB_HEAD_BLOCKS: usize = 2;
+
+    /// Read the first `KB_HEAD_BLOCKS` blocks of a file extent (its frontmatter
+    /// head) into `FS_FILEBUF` and return them. The directory entry is already
+    /// in hand, so this skips the superblock/directory re-read `fs_read_file`
+    /// would do per call.
+    fn fs_read_extent_head(start_block: u32, byte_len: u32) -> Option<&'static [u8]> {
         use kernel_common::fs;
-        let sb = match fs::Superblock::decode(fs_read_block(0)?) {
-            Some(sb) => sb,
-            None => {
-                println!("fs: bad superblock");
-                return None;
-            }
-        };
-        // Copy the directory block out before later reads clobber the DMA page.
-        let mut dir = [0u8; fs::BLOCK_SIZE];
-        dir.copy_from_slice(fs_read_block(sb.dir_block)?);
-        let ent = match fs::lookup(&dir, sb.dir_entries, name) {
-            Some(e) => e,
-            None => {
-                println!("fs: file '{}' not found", name);
-                return None;
-            }
-        };
-        let len = ent.byte_len as usize;
-        if len > FS_FILEBUF_LEN {
-            println!("fs: file '{}' too large ({} bytes)", name, len);
-            return None;
-        }
-        let nblocks = fs::block_count(ent.byte_len) as usize;
+        let nblocks = (fs::block_count(byte_len) as usize).min(KB_HEAD_BLOCKS);
+        let len = (byte_len as usize)
+            .min(nblocks * fs::BLOCK_SIZE)
+            .min(FS_FILEBUF_LEN);
         // SAFETY: single hart; FS_FILEBUF is ours for the duration of this read.
         unsafe {
             for i in 0..nblocks {
-                let blk = match fs_read_block(ent.start_block + i as u32) {
-                    Some(b) => b,
-                    None => {
-                        println!("fs: block read error");
-                        return None;
-                    }
-                };
+                let blk = fs_read_block(start_block + i as u32)?;
                 let off = i * fs::BLOCK_SIZE;
                 let take = core::cmp::min(fs::BLOCK_SIZE, len - off);
                 FS_FILEBUF[off..off + take].copy_from_slice(&blk[..take]);
@@ -1201,9 +1185,9 @@ mod bare {
                         None => break,
                     };
                     scanned += 1;
-                    // `ent` (and its name) live on our stack; fs_read_file only
-                    // touches the DMA page and FS_FILEBUF.
-                    let bytes = match fs_read_file(ent.name_str()) {
+                    // Read just this entry's frontmatter head (its extent is
+                    // known from `ent`), keeping the boot-time read count small.
+                    let bytes = match fs_read_extent_head(ent.start_block, ent.byte_len) {
                         Some(b) => b,
                         None => continue,
                     };
