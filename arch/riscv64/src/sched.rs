@@ -421,7 +421,7 @@ pub fn exit_current(reason: ExitReason) -> ! {
                 match crate::heal::diagnose(cause) {
                     Some(issue) => crate::println!(
                         "heal: diagnosed {} ({}) -> playbook: {}",
-                        issue.id, issue.title, issue.playbook
+                        issue.id(), issue.title(), issue.playbook()
                     ),
                     None => crate::println!("heal: no known issue for {cause:?} (recorded for triage)"),
                 }

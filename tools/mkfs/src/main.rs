@@ -1,32 +1,54 @@
-//! Build the Phase 6b demo filesystem image and write it to the path given as
-//! the first argument. The demo file is named "KB-0005" and spans two blocks,
-//! with a marker line near the end (in block 2) so the smoke test can prove a
-//! multi-block extent read. (6c will generalize this to pack real KB files.)
+//! Build the Phase 6c filesystem image from the real knowledge base and write
+//! it to the path given as the first argument. Only the **runtime-matchable**
+//! entries are packed — those whose frontmatter declares a `match-cause` token
+//! (today just KB-0005; KB-0001..0004 are dev-environment issues with no
+//! runtime fault class). Each is packed under its id; the in-kernel loader
+//! enumerates the directory and parses each entry's frontmatter. Filtering by
+//! token (not by name) keeps both sides data-driven and the image small, so
+//! the loader's boot-time reads stay few.
 
-use std::fs;
+use std::{fs, path::PathBuf};
 
-const DEMO_NAME: &str = "KB-0005";
-
-fn demo_content() -> Vec<u8> {
-    let mut v = Vec::new();
-    v.extend_from_slice(b"PHASE 6B FILESYSTEM TEST FILE\n");
-    while v.len() < 560 {
-        v.extend_from_slice(b"....filler line....\n");
-    }
-    v.extend_from_slice(b"FS-6B-TAIL-OK\n");
-    v
+fn entries_dir() -> PathBuf {
+    // tools/mkfs -> repo root is two levels up.
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../knowledge-base/entries")
 }
 
 fn main() {
     let out = std::env::args().nth(1).expect("usage: mkfs <image-path>");
-    let content = demo_content();
-    let img = mkfs::build_image(&[(DEMO_NAME, &content)]);
+    let dir = entries_dir();
+
+    let mut files: Vec<(String, Vec<u8>)> = Vec::new();
+    for ent in fs::read_dir(&dir).expect("read knowledge-base/entries") {
+        let path = ent.expect("dirent").path();
+        if path.extension().and_then(|e| e.to_str()) != Some("md") {
+            continue;
+        }
+        let bytes = fs::read(&path).expect("read entry");
+        // Pack only entries the self-healer can match at runtime (have a token).
+        let matchable = kernel_common::kb::parse(&bytes)
+            .map(|r| r.match_cause.is_some())
+            .unwrap_or(false);
+        if !matchable {
+            continue;
+        }
+        let id = path.file_stem().unwrap().to_string_lossy().into_owned();
+        files.push((id, bytes));
+    }
+    files.sort_by(|a, b| a.0.cmp(&b.0)); // deterministic directory order
+    assert!(
+        !files.is_empty(),
+        "no runtime-matchable KB entries (with a match-cause token) found in {}",
+        dir.display()
+    );
+
+    let refs: Vec<(&str, &[u8])> = files.iter().map(|(n, b)| (n.as_str(), b.as_slice())).collect();
+    let img = mkfs::build_image(&refs);
     fs::write(&out, &img).expect("write image");
     eprintln!(
-        "mkfs: wrote {} ({} bytes); file '{}' = {} bytes",
+        "mkfs: wrote {} ({} bytes); packed {} runtime-matchable KB entries",
         out,
         img.len(),
-        DEMO_NAME,
-        content.len()
+        refs.len()
     );
 }
