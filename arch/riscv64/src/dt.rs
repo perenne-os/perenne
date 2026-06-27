@@ -14,6 +14,8 @@ pub struct MachineInfo {
     pub timebase_hz: u64,
     pub uart_base: usize,
     pub uart_reg_shift: u32,
+    /// The UART's IRQ (`interrupts`) — QEMU `virt` ns16550 = 10.
+    pub uart_irq: u32,
     pub rtc_base: usize,
     /// Bases of the `virtio,mmio` transport slots (QEMU `virt` exposes 8).
     pub virtio_mmio: [usize; 8],
@@ -86,6 +88,7 @@ pub fn parse(dtb: &[u8]) -> Option<MachineInfo> {
     let mut node_reg: Option<usize> = None;
     let mut node_shift: u32 = 0;
     let mut uart: Option<(usize, u32)> = None;
+    let mut uart_irq: u32 = 0;
     let mut node_is_rtc = false;
     let mut rtc: Option<usize> = None;
     let mut node_is_virtio = false;
@@ -120,6 +123,8 @@ pub fn parse(dtb: &[u8]) -> Option<MachineInfo> {
                 if node_is_uart && uart.is_none() {
                     if let Some(b) = node_reg {
                         uart = Some((b, node_shift));
+                        // The node's `interrupts` was captured generically.
+                        uart_irq = node_virtio_irq.unwrap_or(0);
                     }
                 }
                 if node_is_rtc && rtc.is_none() {
@@ -205,6 +210,7 @@ pub fn parse(dtb: &[u8]) -> Option<MachineInfo> {
         timebase_hz: timebase?,
         uart_base,
         uart_reg_shift,
+        uart_irq,
         rtc_base: rtc?,
         virtio_mmio,
         virtio_mmio_count: virtio_count,
@@ -243,6 +249,7 @@ mod tests {
         assert_eq!(mi.ram_size, 128 * 1024 * 1024, "ram size 128 MiB");
         assert_eq!(mi.timebase_hz, 10_000_000, "timebase 10 MHz");
         assert_eq!(mi.uart_base, 0x1000_0000, "uart base");
+        assert_eq!(mi.uart_irq, 10, "uart irq (QEMU virt ns16550 = 10)");
         assert_eq!(mi.uart_reg_shift, 0, "uart reg-shift");
         assert_eq!(mi.rtc_base, 0x10_1000, "rtc base");
         assert_eq!(mi.virtio_mmio_count, 8, "QEMU virt has 8 virtio-mmio slots");
