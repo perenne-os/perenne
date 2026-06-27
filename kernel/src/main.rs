@@ -128,6 +128,16 @@ mod bare {
         // Phase 6c: same KB-ready gate (first run only).
         sched::grant_cap(flaky, GATE_CAP, Capability::Endpoint(GATE_EP));
 
+        // Phase 7 — the novel patient: an illegal-instruction crash with no KB
+        // entry at first boot. Gated on the KB-ready gate like the others. No
+        // Restart cap: it just needs to be contained and diagnosed (None on
+        // boot 1 -> recorded; matched on boot 2).
+        let xu = ustack(core::ptr::addr_of!(US_NOVEL) as usize);
+        let novel = sched::spawn_user("novel", novel_task, xu.1,
+            core::ptr::addr_of!(KS_NOVEL) as usize + TASK_STACK,
+            mem::build_user_space(xu, NO_DEVICE));
+        sched::grant_cap(novel, GATE_CAP, Capability::Endpoint(GATE_EP));
+
         // The entropy component (a user-space virtio-rng driver) + its kernel
         // consumer, if the device is present. The consumer (earlier slot)
         // recv-blocks before the component sends.
@@ -233,6 +243,11 @@ mod bare {
 
             // The KB loader is the FS client: grant it the blk service cap.
             sched::grant_cap(kb_loader, BLK_EP_CAP, Capability::Endpoint(BLK_EP));
+
+            // Phase 7 — the KB-writer: records a novel contained crash to disk.
+            let kb_writer = sched::spawn("kbw", kb_writer_task,
+                core::ptr::addr_of!(KS_KBW) as usize + TASK_STACK);
+            sched::grant_cap(kb_writer, BLK_EP_CAP, Capability::Endpoint(BLK_EP));
         } else {
             println!("blk: no virtio-blk device found");
         }
@@ -329,6 +344,10 @@ mod bare {
     const BLK_EP_CAP: usize = 0;
     const BLK_IRQ_CAP: usize = 1;
     const BLK_REPLY_SLOT: usize = 2;
+    /// Badge bit that asks the blk server to WRITE block N from the DMA data
+    /// page (otherwise it reads into it). Block numbers are small, so the high
+    /// bit is free.
+    const BLK_WRITE_FLAG: usize = 1 << 31;
 
     /// Phase 6c — the KB-ready gate. Patients block on this endpoint on their
     /// first run so they cannot crash before the loader builds the on-disk KB
@@ -368,6 +387,8 @@ mod bare {
     static mut KS_DCLIENTB: KStack = [0; TASK_STACK];
     static mut KS_BLK: KStack = [0; TASK_STACK];
     static mut KS_FS: KStack = [0; TASK_STACK];
+    static mut KS_KBW: KStack = [0; TASK_STACK];
+    static mut KS_NOVEL: KStack = [0; TASK_STACK];
     static mut KS_IDLE: KStack = [0; TASK_STACK];
 
     /// The PQC consumer runs ML-KEM-768, which in a debug build needs a much
@@ -406,6 +427,8 @@ mod bare {
     static mut US_DCLIENTB: UStack = UStack([0; USER_STACK_SIZE]);
     #[link_section = ".user_data"]
     static mut US_BLK: UStack = UStack([0; USER_STACK_SIZE]);
+    #[link_section = ".user_data"]
+    static mut US_NOVEL: UStack = UStack([0; USER_STACK_SIZE]);
 
     /// Exit syscall (a7 = 2): a0 = code. Never returns.
     ///
@@ -1092,8 +1115,11 @@ mod bare {
             virtio_queue_init(mmio, dma);
             let mut avail_idx: u16 = 0;
             loop {
-                let block = sys_recv(BLK_EP_CAP, BLK_REPLY_SLOT); // badge = block #
-                let status = blk_req(mmio, dma, false, avail_idx, block as u64);
+                // badge = block #, with BLK_WRITE_FLAG set for a write.
+                let badge = sys_recv(BLK_EP_CAP, BLK_REPLY_SLOT);
+                let write = badge & BLK_WRITE_FLAG != 0;
+                let block = (badge & !BLK_WRITE_FLAG) as u64;
+                let status = blk_req(mmio, dma, write, avail_idx, block);
                 avail_idx = avail_idx.wrapping_add(1);
                 sys_reply(BLK_REPLY_SLOT, status as usize);
             }
@@ -1120,6 +1146,70 @@ mod bare {
                 virtio::BLK_SECTOR_SIZE,
             ))
         }
+    }
+
+    /// Write `bytes` (≤ one block; zero-padded) into block `n` via the blk
+    /// server. Fills the shared DMA data page, then asks the server to write it.
+    /// Returns false on a device error. Invalidates the one-block read cache,
+    /// since the DMA page now holds `n`'s outgoing data.
+    fn fs_write_block(n: u32, bytes: &[u8]) -> bool {
+        // SAFETY: BLK_DMA_PA is the kernel-allocated, identity-mapped DMA frame;
+        // single hart owns the page for the duration of this write.
+        unsafe {
+            let data = (BLK_DMA_PA + virtio::BLK_DATA_OFF) as *mut u8;
+            let take = core::cmp::min(bytes.len(), virtio::BLK_SECTOR_SIZE);
+            core::ptr::copy_nonoverlapping(bytes.as_ptr(), data, take);
+            for i in take..virtio::BLK_SECTOR_SIZE {
+                core::ptr::write(data.add(i), 0);
+            }
+            FS_CACHED_BLOCK = -1; // DMA page no longer holds a cached read
+            let status = sched::call_message(BLK_EP_CAP, (n as usize) | BLK_WRITE_FLAG);
+            status == 0
+        }
+    }
+
+    /// Append a file named `name` with `contents` to the on-disk volume. Reads
+    /// the superblock + directory, plans the append (`fs::append_plan`), then
+    /// writes data block(s) → directory → superblock LAST. The superblock write
+    /// is the single commit point: a crash before it leaves the new blocks
+    /// unreferenced (invisible), so existing data is never corrupted. Returns
+    /// false if the plan is refused or any write errors (aborting before the
+    /// commit). `contents` must fit in one block (a KB entry's frontmatter does).
+    fn fs_append_file(name: &str, contents: &[u8]) -> bool {
+        use kernel_common::fs;
+        if contents.len() > fs::BLOCK_SIZE {
+            return false;
+        }
+        // Copy the superblock and directory out of the reused DMA page before
+        // any write overwrites it.
+        let mut sb_buf = [0u8; fs::BLOCK_SIZE];
+        match fs_read_block(0) {
+            Some(b) => sb_buf.copy_from_slice(b),
+            None => return false,
+        }
+        let sb = match fs::Superblock::decode(&sb_buf) {
+            Some(sb) => sb,
+            None => return false,
+        };
+        let mut dir_buf = [0u8; fs::BLOCK_SIZE];
+        match fs_read_block(sb.dir_block) {
+            Some(b) => dir_buf.copy_from_slice(b),
+            None => return false,
+        }
+        let plan = match fs::append_plan(&sb, &dir_buf, name, contents.len() as u32) {
+            Some(p) => p,
+            None => return false,
+        };
+        // 1. data, 2. directory, 3. superblock (commit) — in that order.
+        if !fs_write_block(plan.start_block, contents) {
+            return false;
+        }
+        if !fs_write_block(sb.dir_block, &plan.dir_block) {
+            return false;
+        }
+        let mut new_sb = [0u8; fs::BLOCK_SIZE];
+        plan.new_superblock.encode(&mut new_sb);
+        fs_write_block(0, &new_sb)
     }
 
     /// Number of leading blocks of a KB entry the loader reads — enough to
@@ -1209,13 +1299,93 @@ mod bare {
             if loaded == 1 { "y" } else { "ies" },
             scanned
         );
-        // Release the two gated patients now that the table is built.
+        // Release the gated patients now that the table is built
+        // (transient, flaky, novel).
+        sched::call_message(GATE_LOADER_CAP, 0);
         sched::call_message(GATE_LOADER_CAP, 0);
         sched::call_message(GATE_LOADER_CAP, 0);
         loop {
             sched::yield_now();
             // SAFETY: wait for the next interrupt between yields.
             unsafe { core::arch::asm!("wfi") };
+        }
+    }
+
+    /// Default playbook the organism records for any newly-seen contained crash
+    /// — the same caged, bounded restart KB-0005 prescribes.
+    const DEFAULT_PLAYBOOK: &str = "Restart the component, up to a bounded number of retries.";
+
+    /// The KB-writer task (Phase 7): drains the novel-cause mailbox the crash
+    /// path fills, mints a KB entry for the unrecognized token, appends it to
+    /// disk (`fs_append_file`), and installs it into the runtime table — so a
+    /// later boot of the same image diagnoses the formerly-novel crash. Runs
+    /// with interrupts on (I/O is forbidden in the crash path). Polls in a
+    /// yield loop, like `idle`/the loader.
+    extern "C" fn kb_writer_task() -> ! {
+        use kernel_common::kb;
+        loop {
+            if let Some(token) = heal::take_novel() {
+                // Mint the next id: "KB-NNNN" after the largest installed.
+                let num = heal::max_kb_number() + 1;
+                let mut id = [0u8; 8]; // "KB-NNNN"
+                id[0] = b'K'; id[1] = b'B'; id[2] = b'-';
+                id[3] = b'0' + ((num / 1000) % 10) as u8;
+                id[4] = b'0' + ((num / 100) % 10) as u8;
+                id[5] = b'0' + ((num / 10) % 10) as u8;
+                id[6] = b'0' + (num % 10) as u8;
+                let id = core::str::from_utf8(&id[..7]).unwrap_or("KB-0000");
+
+                // Title: "Observed fault: <token> (auto-recorded)".
+                let mut title = [0u8; 96];
+                let mut tn = 0usize;
+                for s in ["Observed fault: ", token, " (auto-recorded)"] {
+                    let b = s.as_bytes();
+                    let take = core::cmp::min(b.len(), title.len() - tn);
+                    title[tn..tn + take].copy_from_slice(&b[..take]);
+                    tn += take;
+                }
+                let title = core::str::from_utf8(&title[..tn]).unwrap_or("Observed fault");
+
+                let mut doc = [0u8; kernel_common::fs::BLOCK_SIZE];
+                if let Some(len) = kb::serialize(id, title, DEFAULT_PLAYBOOK, token, &mut doc) {
+                    if fs_append_file(id, &doc[..len]) {
+                        // Install it now too, so a re-crash this boot matches.
+                        heal::install(id, title, DEFAULT_PLAYBOOK, Some(token));
+                        println!("heal: recorded {id} ({token}) to disk");
+                    } else {
+                        println!("heal: could not record {id} ({token}) to disk");
+                    }
+                }
+            }
+            sched::yield_now();
+            // SAFETY: wait for the next interrupt between polls.
+            unsafe { core::arch::asm!("wfi") };
+        }
+    }
+
+    /// The novel patient (Phase 7): a U-mode component that executes an illegal
+    /// instruction (`unimp`) — a contained crash whose token has no KB entry at
+    /// first boot. Gated on the KB-ready gate (first run) like the other
+    /// patients, so it crashes only after the loader has built the table.
+    #[no_mangle]
+    #[link_section = ".user_text"]
+    extern "C" fn novel_task() -> ! {
+        let generation: usize;
+        // SAFETY: read the launch generation the kernel placed in a0.
+        unsafe {
+            core::arch::asm!("mv {g}, a0", g = out(reg) generation, options(nomem, nostack, preserves_flags));
+        }
+        if generation == 0 {
+            // SAFETY: we hold Endpoint(GATE_EP) at GATE_CAP; recv then reply.
+            unsafe {
+                let _ = sys_recv(GATE_CAP, GATE_REPLY_SLOT);
+                sys_reply(GATE_REPLY_SLOT, 0);
+            }
+        }
+        // SAFETY: `unimp` is the canonical illegal instruction; the U-mode trap
+        // (scause 2) is contained by the kernel. Control never returns.
+        unsafe {
+            core::arch::asm!("unimp", options(nostack, noreturn));
         }
     }
 
