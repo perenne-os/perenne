@@ -52,6 +52,22 @@ pub fn cap_at(caps: &[Option<Capability>], idx: usize) -> Option<Capability> {
     }
 }
 
+/// Clear every capability slot in `caps` holding `Endpoint(ep)`, returning the
+/// number cleared. This is how the kernel revokes an endpoint from one holder:
+/// a cleared slot is `None`, so `cap_lookup` later returns `None` and the
+/// holder's IPC fails — no new check on the hot path. Other endpoint ids and
+/// other capability types are untouched. Pure.
+pub fn revoke_in_caps(caps: &mut [Option<Capability>], ep: EndpointId) -> usize {
+    let mut n = 0;
+    for slot in caps.iter_mut() {
+        if matches!(slot, Some(Capability::Endpoint(id)) if *id == ep) {
+            *slot = None;
+            n += 1;
+        }
+    }
+    n
+}
+
 /// Look up capability `idx` in `caps`; if it is a restart capability, return
 /// its target scheduler slot. `None` if the index is out of range, the slot
 /// is empty, or the capability is the wrong type (e.g. an endpoint).
@@ -162,6 +178,28 @@ mod tests {
         let caps = [None, Some(Capability::Endpoint(0))];
         assert_eq!(cap_at(&caps, 0), None, "empty slot");
         assert_eq!(cap_at(&caps, 9), None, "out of range");
+    }
+
+    #[test]
+    fn revoke_clears_matching_endpoint_caps_and_counts() {
+        let mut caps = [
+            Some(Capability::Endpoint(7)),
+            Some(Capability::Endpoint(3)),
+            Some(Capability::Endpoint(7)),
+            Some(Capability::Restart(7)),
+        ];
+        assert_eq!(revoke_in_caps(&mut caps, 7), 2, "two Endpoint(7) caps cleared");
+        assert_eq!(caps[0], None);
+        assert_eq!(caps[2], None);
+        assert_eq!(caps[1], Some(Capability::Endpoint(3)), "a different endpoint id is untouched");
+        assert_eq!(caps[3], Some(Capability::Restart(7)), "a non-endpoint cap with the same number is untouched");
+    }
+
+    #[test]
+    fn revoke_absent_endpoint_clears_nothing() {
+        let mut caps = [Some(Capability::Endpoint(1)), None, Some(Capability::Randomness)];
+        assert_eq!(revoke_in_caps(&mut caps, 9), 0);
+        assert_eq!(caps[0], Some(Capability::Endpoint(1)));
     }
 
     #[test]
