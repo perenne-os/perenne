@@ -457,9 +457,29 @@ than the recent increments:
   non-escalated issues is unchanged. Per-issue-class; per-component ledgers
   deferred. QEMU-only.
 
-## Phase 13+ — Breadth
+## Phase 13 — Capability revocation  *(done — 2026-06-27)*
 
-- **Goal:** the long tail — per-component crash ledgers (precise per-component
+- **Goal:** the kernel can **take back** delegated authority — revoke an endpoint
+  capability so every holder's next use of it fails. The revocation half of a
+  real capability system (the partner to Phase 8's delegation), and a concrete
+  trust-posture guarantee: granted authority is controllable, not permanent.
+- **You learn:** transitive revocation via a **sweep** (clear every `Endpoint(ep)`
+  slot in every CSpace) needs no derivation tree — a cleared slot is just `None`,
+  so the existing lookup already fails; authority to revoke is holding the cap;
+  and the epoch/generation alternative (O(1), re-grantable) and its trade-offs
+  (see [learning note 0031](../learning/0031-capability-revocation.md)).
+- **Done when:** ✅ `./tools/test-qemu.ps1` shows a `lease_server` hand a `tenant`
+  an endpoint capability, answer one call, then revoke it
+  (`cap: 'lease' revoked endpoint 7 from 1 holder(s)`) — the tenant's second call
+  is rejected and it exits with the marker (`sched: task 'tenant' exited
+  (code 13)`). A pure `cap::revoke_in_caps`, `sched::revoke_endpoint`, and a
+  `revoke` syscall (a7 = 12) authorized by holding the cap. Per-endpoint
+  transitive sweep; epoch/CDT revocation deferred. QEMU-only.
+
+## Phase 14+ — Breadth
+
+- **Goal:** the long tail — epoch/generation revocation (O(1), re-grantable) + a
+  capability derivation tree, per-component crash ledgers (precise per-component
   quarantine + de-quarantine), growable/variable-length records (a free-block
   allocator, multi-block directories), reliable live-keystroke shell testing + a
   richer command set, more hardware (physical RISC-V board boot 4c, ARM/phones),

@@ -40,3 +40,4 @@ This folder holds the author's learning notes as systems-programming concepts cl
 - [0028 — Revisable knowledge: the seen-N-times counter (Phase 10)](0028-revisable-kb.md)
 - [0029 — Counter-driven escalation: flagging a chronic fault (Phase 11)](0029-counter-driven-escalation.md)
 - [0030 — Act on escalation: quarantine a chronic fault (Phase 12)](0030-quarantine-on-escalation.md)
+- [0031 — Capability revocation: take back delegated authority (Phase 13)](0031-capability-revocation.md)
