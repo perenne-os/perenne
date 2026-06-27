@@ -102,6 +102,21 @@ mod bare {
         sched::grant_cap(broker, GRANT_CHAN_CAP, Capability::Endpoint(GRANT_EP));
         sched::grant_cap(broker, BROKER_RTC_SLOT, Capability::Endpoint(EP0));
 
+        // Phase 13 — capability revocation. The lease server answers the tenant
+        // once, then revokes the leased endpoint; the tenant's second call fails.
+        // Spawn the server first so it recv-blocks before the tenant calls.
+        let lsu = ustack(core::ptr::addr_of!(US_LEASE) as usize);
+        let lease = sched::spawn_user("lease", lease_server, lsu.1,
+            core::ptr::addr_of!(KS_LEASE) as usize + TASK_STACK,
+            mem::build_user_space(lsu, NO_DEVICE));
+        sched::grant_cap(lease, LEASE_CAP, Capability::Endpoint(LEASE_EP));
+
+        let tnu = ustack(core::ptr::addr_of!(US_TENANT) as usize);
+        let tenant = sched::spawn_user("tenant", tenant_task, tnu.1,
+            core::ptr::addr_of!(KS_TENANT) as usize + TASK_STACK,
+            mem::build_user_space(tnu, NO_DEVICE));
+        sched::grant_cap(tenant, LEASE_CAP, Capability::Endpoint(LEASE_EP));
+
         // rogue gets NO endpoint capability — its send must be refused.
         let ru = ustack(core::ptr::addr_of!(US_ROGUE) as usize);
         let _rogue = sched::spawn_user("rogue", rogue_task, ru.1,
@@ -346,6 +361,16 @@ mod bare {
     const NEEDY_RTC_SLOT: usize = 1; // where needy receives the delegated RTC cap
     const NEEDY_EMPTY_SLOT: usize = 3; // an empty slot the broker's bad grant names
 
+    /// The lease endpoint for the Phase 13 revocation demo (distinct from EP0 and
+    /// the grant channel). Both the lease server and the tenant hold a cap to it
+    /// at cap slot 0; the server answers one call then revokes it.
+    const LEASE_EP: usize = 7;
+    const LEASE_CAP: usize = 0; // Endpoint(LEASE_EP), held by server and tenant
+    const LEASE_REPLY_SLOT: usize = 1; // the server's reply-cap slot
+    /// The tenant's exit code when it used the cap once and its second (revoked)
+    /// use was rejected.
+    const TENANT_REVOKED_CODE: usize = 13;
+
     /// The healer's cap-table slot holding its `Endpoint(CRASH_EP)` capability
     /// (it `recv`s on this to learn of crashes). Restart caps live at slots
     /// 1.. so a crash notification's badge is directly the cap slot to use.
@@ -407,6 +432,8 @@ mod bare {
     static mut KS_RTC: KStack = [0; TASK_STACK];
     static mut KS_CLIENT: KStack = [0; TASK_STACK];
     static mut KS_BROKER: KStack = [0; TASK_STACK];
+    static mut KS_LEASE: KStack = [0; TASK_STACK];
+    static mut KS_TENANT: KStack = [0; TASK_STACK];
     static mut KS_ROGUE: KStack = [0; TASK_STACK];
     static mut KS_HEALER: KStack = [0; TASK_STACK];
     static mut KS_TRANSIENT: KStack = [0; TASK_STACK];
@@ -441,6 +468,10 @@ mod bare {
     static mut US_CLIENT: UStack = UStack([0; USER_STACK_SIZE]);
     #[link_section = ".user_data"]
     static mut US_BROKER: UStack = UStack([0; USER_STACK_SIZE]);
+    #[link_section = ".user_data"]
+    static mut US_LEASE: UStack = UStack([0; USER_STACK_SIZE]);
+    #[link_section = ".user_data"]
+    static mut US_TENANT: UStack = UStack([0; USER_STACK_SIZE]);
     #[link_section = ".user_data"]
     static mut US_ROGUE: UStack = UStack([0; USER_STACK_SIZE]);
     #[link_section = ".user_data"]
@@ -517,6 +548,24 @@ mod bare {
             inout("a0") ep => ret,
             in("a1") src_slot,
             in("a2") badge,
+            options(nostack),
+        );
+        ret
+    }
+
+    /// revoke syscall (a7 = 12): a0 = the slot of an Endpoint cap the caller
+    /// holds. Revokes that endpoint from every other holder. Returns the count
+    /// revoked, or `usize::MAX` if the caller lacks the capability.
+    ///
+    /// # Safety
+    /// Always sound; the kernel validates the capability.
+    #[inline(always)]
+    unsafe fn sys_revoke(ep: usize) -> usize {
+        let ret;
+        core::arch::asm!(
+            "ecall",
+            in("a7") 12usize,
+            inout("a0") ep => ret,
             options(nostack),
         );
         ret
@@ -869,6 +918,41 @@ mod bare {
             let _ = sys_grant(GRANT_CHAN_CAP, NEEDY_EMPTY_SLOT, 0);
             let _ = sys_grant(GRANT_CHAN_CAP, BROKER_RTC_SLOT, 1);
             sys_exit(0)
+        }
+    }
+
+    /// `lease_server` (Phase 13): holds Endpoint(LEASE_EP) for recv + revoke
+    /// authority. It answers the tenant's first call, then REVOKES LEASE_EP —
+    /// clearing the tenant's leased cap while keeping its own — and exits.
+    #[no_mangle]
+    #[link_section = ".user_text"]
+    extern "C" fn lease_server() -> ! {
+        // SAFETY: we hold Endpoint(LEASE_EP); recv blocks for the tenant's call,
+        // we reply, then revoke the endpoint from every other holder.
+        unsafe {
+            let _ = sys_recv(LEASE_CAP, LEASE_REPLY_SLOT); // tenant's call 1
+            sys_reply(LEASE_REPLY_SLOT, 1);
+            let _ = sys_revoke(LEASE_CAP);
+            sys_exit(0)
+        }
+    }
+
+    /// `tenant` (Phase 13): holds Endpoint(LEASE_EP). It calls the lease server
+    /// twice; the first succeeds, the second fails because its cap was revoked in
+    /// between. Exits with TENANT_REVOKED_CODE iff "call 1 ok, call 2 revoked".
+    #[no_mangle]
+    #[link_section = ".user_text"]
+    extern "C" fn tenant_task() -> ! {
+        // SAFETY: call sends a request and blocks for the reply; on a revoked
+        // cap the kernel returns usize::MAX.
+        unsafe {
+            let r1 = sys_call(LEASE_CAP, 1);
+            let r2 = sys_call(LEASE_CAP, 2);
+            if r1 != usize::MAX && r2 == usize::MAX {
+                sys_exit(TENANT_REVOKED_CODE)
+            } else {
+                sys_exit(99)
+            }
         }
     }
 
