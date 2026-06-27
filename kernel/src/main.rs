@@ -1252,41 +1252,39 @@ mod bare {
     /// unreferenced (invisible), so existing data is never corrupted. Returns
     /// false if the plan is refused or any write errors (aborting before the
     /// commit). `contents` must fit in one block (a KB entry's frontmatter does).
-    fn fs_append_file(name: &str, contents: &[u8]) -> bool {
+    fn fs_append_file(name: &str, contents: &[u8]) -> Option<u32> {
         use kernel_common::fs;
         if contents.len() > fs::BLOCK_SIZE {
-            return false;
+            return None;
         }
         // Copy the superblock and directory out of the reused DMA page before
         // any write overwrites it.
         let mut sb_buf = [0u8; fs::BLOCK_SIZE];
         match fs_read_block(0) {
             Some(b) => sb_buf.copy_from_slice(b),
-            None => return false,
+            None => return None,
         }
-        let sb = match fs::Superblock::decode(&sb_buf) {
-            Some(sb) => sb,
-            None => return false,
-        };
+        let sb = fs::Superblock::decode(&sb_buf)?;
         let mut dir_buf = [0u8; fs::BLOCK_SIZE];
         match fs_read_block(sb.dir_block) {
             Some(b) => dir_buf.copy_from_slice(b),
-            None => return false,
+            None => return None,
         }
-        let plan = match fs::append_plan(&sb, &dir_buf, name, contents.len() as u32) {
-            Some(p) => p,
-            None => return false,
-        };
+        let plan = fs::append_plan(&sb, &dir_buf, name, contents.len() as u32)?;
         // 1. data, 2. directory, 3. superblock (commit) — in that order.
         if !fs_write_block(plan.start_block, contents) {
-            return false;
+            return None;
         }
         if !fs_write_block(sb.dir_block, &plan.dir_block) {
-            return false;
+            return None;
         }
         let mut new_sb = [0u8; fs::BLOCK_SIZE];
         plan.new_superblock.encode(&mut new_sb);
-        fs_write_block(0, &new_sb)
+        if fs_write_block(0, &new_sb) {
+            Some(plan.start_block)
+        } else {
+            None
+        }
     }
 
     /// Number of leading blocks of a KB entry the loader reads — enough to
@@ -1360,7 +1358,7 @@ mod bare {
                     };
                     if let Some(rec) = kb::parse(bytes) {
                         if rec.match_cause.is_some()
-                            && heal::install(rec.id, rec.title, rec.playbook, rec.match_cause)
+                            && heal::install(rec.id, rec.title, rec.playbook, rec.match_cause, rec.seen, ent.start_block)
                         {
                             loaded += 1;
                         }
@@ -1425,13 +1423,24 @@ mod bare {
 
                 let mut doc = [0u8; kernel_common::fs::BLOCK_SIZE];
                 if let Some(len) = kb::serialize(id, title, DEFAULT_PLAYBOOK, token, &mut doc) {
-                    if fs_append_file(id, &doc[..len]) {
+                    if let Some(start) = fs_append_file(id, &doc[..len]) {
                         // Install it now too, so a re-crash this boot matches.
-                        heal::install(id, title, DEFAULT_PLAYBOOK, Some(token));
+                        heal::install(id, title, DEFAULT_PLAYBOOK, Some(token), 0, start);
                         println!("heal: recorded {id} ({token}) to disk");
                     } else {
                         println!("heal: could not record {id} ({token}) to disk");
                     }
+                }
+            }
+            // Phase 10 — persist any entry whose seen-counter changed, in place.
+            while let Some((id, start_block, seen)) = heal::dirty_entry() {
+                let mut block = [0u8; kernel_common::fs::BLOCK_SIZE];
+                match fs_read_block(start_block) {
+                    Some(b) => block.copy_from_slice(b),
+                    None => continue,
+                }
+                if kb::set_seen_in_block(&mut block, seen) && fs_write_block(start_block, &block) {
+                    println!("heal: persisted {id} (seen {seen})");
                 }
             }
             sched::yield_now();
