@@ -25,7 +25,7 @@ use crate::task::Relaunch;
 
 /// Maximum concurrent tasks: the demo runs thirteen (the above plus deferrer,
 /// dclientA, dclientB) plus headroom.
-pub const MAX_TASKS: usize = 18;
+pub const MAX_TASKS: usize = 20;
 
 /// The reserved endpoint id the kernel uses to notify the self-healer of a
 /// contained crash. The healer holds an `Endpoint(CRASH_EP)` capability and
@@ -48,7 +48,7 @@ pub struct Scheduler {
 impl Scheduler {
     /// An empty scheduler; `spawn` fills slots and `enter` starts it.
     pub const fn new() -> Self {
-        Self { tasks: [None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None], current: 0 }
+        Self { tasks: [None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None], current: 0 }
     }
 
     /// Index of the next task to run after `current`, round-robin: scan

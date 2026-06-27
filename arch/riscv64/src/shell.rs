@@ -72,6 +72,93 @@ impl Default for LineBuffer {
     }
 }
 
+#[cfg(target_arch = "riscv64")]
+use core::sync::atomic::{AtomicUsize, Ordering};
+
+/// The discovered UART MMIO base / register shift, stored at boot for the shell
+/// task (which is spawned with no arguments).
+#[cfg(target_arch = "riscv64")]
+static UART_BASE: AtomicUsize = AtomicUsize::new(0);
+#[cfg(target_arch = "riscv64")]
+static UART_SHIFT: AtomicUsize = AtomicUsize::new(0);
+
+/// The cap slot the shell holds its `Interrupt(uart_irq)` capability in.
+#[cfg(target_arch = "riscv64")]
+const SHELL_IRQ_CAP: usize = 0;
+
+/// Record the UART location for the shell task. Called from `kmain`.
+#[cfg(target_arch = "riscv64")]
+pub fn init(base: usize, reg_shift: u32) {
+    UART_BASE.store(base, Ordering::Relaxed);
+    UART_SHIFT.store(reg_shift as usize, Ordering::Relaxed);
+}
+
+#[cfg(target_arch = "riscv64")]
+fn prompt() {
+    crate::print!("> ");
+}
+
+/// Run one completed command, printing its result.
+#[cfg(target_arch = "riscv64")]
+fn dispatch(cmd: &str) {
+    match cmd {
+        "" => {}
+        "help" => crate::println!("commands: help, kb, diag"),
+        "kb" => {
+            let mut i = 0;
+            while let Some((id, title)) = crate::heal::entry(i) {
+                crate::println!("{id}  {title}");
+                i += 1;
+            }
+            if i == 0 {
+                crate::println!("(knowledge base empty)");
+            }
+        }
+        "diag" => match crate::heal::last_diagnosis() {
+            Some((id, playbook)) => crate::println!("last: {id} -> {playbook}"),
+            None => crate::println!("none yet"),
+        },
+        other => crate::println!("unknown command '{other}' (try 'help')"),
+    }
+}
+
+/// The shell task: enable UART RX, announce readiness, then loop blocking on the
+/// UART IRQ, draining received bytes through the line discipline, and
+/// dispatching each completed command against the organism.
+#[cfg(target_arch = "riscv64")]
+pub extern "C" fn shell_task() -> ! {
+    let base = UART_BASE.load(Ordering::Relaxed);
+    let shift = UART_SHIFT.load(Ordering::Relaxed) as u32;
+    // SAFETY: `base` is the kernel-owned ns16550, mapped in every address space.
+    unsafe { crate::uart::enable_rx_interrupt(base, shift) };
+    let mut line = LineBuffer::new();
+    crate::println!("shell: ready (type 'help')");
+    prompt();
+    loop {
+        // Block until a keystroke's IRQ wakes us (re-arms the PLIC source).
+        if !crate::sched::wait_irq_for(SHELL_IRQ_CAP) {
+            // No IRQ cap — should not happen; avoid a busy loop.
+            crate::sched::yield_now();
+            continue;
+        }
+        // Drain everything the UART has buffered.
+        // SAFETY: kernel-owned ns16550 register window.
+        while let Some(byte) = unsafe { crate::uart::get(base, shift) } {
+            match line.push(byte) {
+                LineEvent::Echo(b) => crate::print!("{}", b as char),
+                LineEvent::Backspace => crate::print!("\x08 \x08"),
+                LineEvent::Line => {
+                    crate::println!();
+                    let cmd = line.take();
+                    dispatch(cmd);
+                    prompt();
+                }
+                LineEvent::None => {}
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

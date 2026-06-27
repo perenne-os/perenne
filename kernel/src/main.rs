@@ -18,7 +18,7 @@ mod bare {
     use core::panic::PanicInfo;
 
     use kernel::GREETING;
-    use kernel_arch_riscv64::{cap::Capability, console, csr, dt, entropy, heal, mem, plic, println, sched, task::Message, timer, trap, virtio};
+    use kernel_arch_riscv64::{cap::Capability, console, csr, dt, entropy, heal, mem, plic, println, sched, shell, task::Message, timer, trap, virtio};
     use kernel_common::PROJECT_NAME;
 
     /// Rust entry, called from the boot assembly with the arguments
@@ -263,6 +263,20 @@ mod bare {
             println!("blk: no virtio-blk device found");
         }
 
+        // Phase 9 — the diagnosis-aware shell: a kernel task driven by UART RX
+        // interrupts that queries the self-healing organism (kb / diag). The
+        // UART is kernel-owned, so the shell drives the existing console and
+        // reads `heal` directly.
+        shell::init(machine.uart_base, machine.uart_reg_shift);
+        let shell = sched::spawn("shell", shell::shell_task,
+            core::ptr::addr_of!(KS_SHELL) as usize + TASK_STACK);
+        plic::init(machine.plic_base); // idempotent
+        plic::set_priority(machine.uart_irq, 1);
+        plic::enable(machine.uart_irq);
+        // SAFETY: the trap handler + PLIC service external interrupts.
+        unsafe { csr::sie_enable_external() };
+        sched::grant_cap(shell, 0, Capability::Interrupt(machine.uart_irq));
+
         sched::spawn("idle", idle, core::ptr::addr_of!(KS_IDLE) as usize + TASK_STACK);
 
         timer::init(machine.timebase_hz);
@@ -410,6 +424,7 @@ mod bare {
     static mut KS_FS: KStack = [0; TASK_STACK];
     static mut KS_KBW: KStack = [0; TASK_STACK];
     static mut KS_NOVEL: KStack = [0; TASK_STACK];
+    static mut KS_SHELL: KStack = [0; TASK_STACK];
     static mut KS_IDLE: KStack = [0; TASK_STACK];
 
     /// The PQC consumer runs ML-KEM-768, which in a debug build needs a much
