@@ -24,6 +24,11 @@ const TOKEN_CAP: usize = 24;
 /// Runtime table capacity (one directory block holds at most 8 entries).
 pub const MAX_ISSUES: usize = 8;
 
+/// Diagnoses (across reboots, via the persisted `seen` counter) at which the
+/// organism escalates an issue as chronically recurring. Above one boot's count
+/// (KB-0005 is diagnosed 4×/boot) so escalation *requires* cross-boot memory.
+pub const ESCALATE_AT: u32 = 6;
+
 /// A fixed-capacity, copyable string — owns its bytes so a `KnownIssue` can
 /// outlive the disk buffer it was parsed from (no allocator in the kernel).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,6 +70,9 @@ pub struct KnownIssue {
     /// How many times this issue has been diagnosed (the on-disk "seen N times"
     /// counter, loaded at boot and incremented in RAM on each diagnosis).
     seen: u32,
+    /// Whether the organism has escalated this issue as chronically recurring
+    /// (latched once `seen` crosses `ESCALATE_AT`; persisted on disk).
+    escalated: bool,
     /// The entry's first block on disk, so the KB-writer can rewrite its `seen`
     /// field in place. `0` = not persistable (block 0 is the superblock).
     start_block: u32,
@@ -73,13 +81,14 @@ pub struct KnownIssue {
 }
 
 impl KnownIssue {
-    fn new(id: &str, title: &str, playbook: &str, match_cause: &str, seen: u32, start_block: u32) -> Self {
+    fn new(id: &str, title: &str, playbook: &str, match_cause: &str, seen: u32, escalated: bool, start_block: u32) -> Self {
         KnownIssue {
             id: Buf::from_str(id),
             title: Buf::from_str(title),
             playbook: Buf::from_str(playbook),
             match_cause: Buf::from_str(match_cause),
             seen,
+            escalated,
             start_block,
             dirty: false,
         }
@@ -95,6 +104,9 @@ impl KnownIssue {
     }
     pub fn seen(&self) -> u32 {
         self.seen
+    }
+    pub fn escalated(&self) -> bool {
+        self.escalated
     }
     fn match_cause(&self) -> &str {
         self.match_cause.as_str()
@@ -118,14 +130,14 @@ static mut NOVEL_TOKEN: Option<&'static str> = None;
 
 /// Install a parsed KB record into the runtime table. Returns false if the
 /// table is full. Called only by the boot-time loader.
-pub fn install(id: &str, title: &str, playbook: &str, match_cause: Option<&str>, seen: u32, start_block: u32) -> bool {
+pub fn install(id: &str, title: &str, playbook: &str, match_cause: Option<&str>, seen: u32, escalated: bool, start_block: u32) -> bool {
     // SAFETY: single hart; called only from the boot KB loader / KB-writer.
     unsafe {
         let count = core::ptr::read(core::ptr::addr_of!(KB_COUNT));
         if count >= MAX_ISSUES {
             return false;
         }
-        let issue = KnownIssue::new(id, title, playbook, match_cause.unwrap_or(""), seen, start_block);
+        let issue = KnownIssue::new(id, title, playbook, match_cause.unwrap_or(""), seen, escalated, start_block);
         let table = &mut *core::ptr::addr_of_mut!(KB_TABLE);
         table[count] = Some(issue);
         core::ptr::write(core::ptr::addr_of_mut!(KB_COUNT), count + 1);
@@ -140,19 +152,21 @@ pub fn loaded_count() -> usize {
 }
 
 /// The `i`-th installed KB entry's `(id, title)`, for the shell's `kb` command.
-pub fn entry(i: usize) -> Option<(&'static str, &'static str, u32)> {
+pub fn entry(i: usize) -> Option<(&'static str, &'static str, u32, bool)> {
     // SAFETY: single hart; the table is boot-populated then read-only here.
     let table = unsafe { &*core::ptr::addr_of!(KB_TABLE) };
     table
         .get(i)
         .and_then(|slot| slot.as_ref())
-        .map(|issue| (issue.id(), issue.title(), issue.seen()))
+        .map(|issue| (issue.id(), issue.title(), issue.seen(), issue.escalated()))
 }
 
 /// Record the most recent diagnosis, increment the matched entry's "seen N
-/// times" counter, and mark it dirty for the KB-writer to persist. Called from
-/// the crash path (interrupts off — no I/O here; the disk write is deferred).
-pub fn note_diagnosis(issue: &KnownIssue) {
+/// times" counter, mark it dirty, and — if the counter just crossed
+/// `ESCALATE_AT` — latch its `escalated` flag. Returns `Some(seen)` iff this
+/// diagnosis *just* escalated the entry (for the crash path to log the one-time
+/// event). Called from the crash path (interrupts off — no I/O; deferred write).
+pub fn note_diagnosis(issue: &KnownIssue) -> Option<u32> {
     // Copy the record out first so we never hold a borrow into the table while
     // we mutate it below (single hart; crash path is not re-entrant).
     let copy = *issue;
@@ -165,17 +179,22 @@ pub fn note_diagnosis(issue: &KnownIssue) {
             if slot.id() == id {
                 slot.seen = slot.seen.saturating_add(1);
                 slot.dirty = true;
+                if slot.seen >= ESCALATE_AT && !slot.escalated {
+                    slot.escalated = true;
+                    return Some(slot.seen);
+                }
                 break;
             }
         }
     }
+    None
 }
 
 /// Return the on-disk `(id, start_block, seen)` of one entry whose counter
 /// changed and clear its dirty flag, so the KB-writer can persist it in place.
 /// `None` if none are dirty. Skips `start_block == 0` (the superblock — never an
 /// entry). Called only by the KB-writer task.
-pub fn dirty_entry() -> Option<(&'static str, u32, u32)> {
+pub fn dirty_entry() -> Option<(&'static str, u32, u32, bool)> {
     // SAFETY: single hart; the KB-writer is the only drainer.
     unsafe {
         let table = &mut *core::ptr::addr_of_mut!(KB_TABLE);
@@ -183,7 +202,7 @@ pub fn dirty_entry() -> Option<(&'static str, u32, u32)> {
             if slot.dirty {
                 slot.dirty = false;
                 if slot.start_block != 0 {
-                    return Some((slot.id(), slot.start_block, slot.seen));
+                    return Some((slot.id(), slot.start_block, slot.seen, slot.escalated));
                 }
             }
         }
@@ -278,13 +297,14 @@ mod tests {
 
     fn table() -> [Option<KnownIssue>; MAX_ISSUES] {
         let mut t: [Option<KnownIssue>; MAX_ISSUES] = Default::default();
-        t[0] = Some(KnownIssue::new("KB-0099", "decoy", "do nothing", "", 0, 0));
+        t[0] = Some(KnownIssue::new("KB-0099", "decoy", "do nothing", "", 0, false, 0));
         t[1] = Some(KnownIssue::new(
             "KB-0005",
             "fatal fault",
             "Restart the component",
             "page-fault",
             0,
+            false,
             0,
         ));
         t
@@ -309,12 +329,24 @@ mod tests {
         // touches the global table, so it runs without cross-test interference.
         assert_eq!(max_kb_number(), 0);
         assert!(entry(0).is_none(), "empty table");
-        assert!(install("KB-0005", "fatal fault", "p", Some("page-fault"), 0, 2));
-        assert!(install("KB-0003", "decoy", "p", Some("x"), 0, 6));
+        assert!(install("KB-0005", "fatal fault", "p", Some("page-fault"), 0, false, 2));
+        assert!(install("KB-0003", "decoy", "p", Some("x"), 0, false, 6));
         assert_eq!(max_kb_number(), 5);
-        assert_eq!(entry(0), Some(("KB-0005", "fatal fault", 0)));
-        assert_eq!(entry(1), Some(("KB-0003", "decoy", 0)));
+        assert_eq!(entry(0), Some(("KB-0005", "fatal fault", 0, false)));
+        assert_eq!(entry(1), Some(("KB-0003", "decoy", 0, false)));
         assert!(entry(2).is_none());
+
+        // KB-0005 escalates once its seen counter crosses ESCALATE_AT. Re-fetch
+        // the issue each call so we never hold a borrow across the mutation.
+        let mut just = None;
+        for _ in 0..ESCALATE_AT {
+            let issue = diagnose(crate::trap::Cause::LoadPageFault).expect("matches KB-0005");
+            just = note_diagnosis(issue);
+        }
+        assert_eq!(just, Some(ESCALATE_AT), "the diagnosis crossing the threshold reports it");
+        assert_eq!(entry(0), Some(("KB-0005", "fatal fault", ESCALATE_AT, true)));
+        let again = diagnose(crate::trap::Cause::LoadPageFault).unwrap();
+        assert!(note_diagnosis(again).is_none(), "already escalated -> not reported again");
     }
 
     #[test]
