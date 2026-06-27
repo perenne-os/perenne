@@ -16,6 +16,7 @@ Every entry in `knowledge-base/entries/` is a Markdown file with a **YAML frontm
 | `playbook` | list of strings | Ordered, **reversible** steps to fix it. |
 | `match-cause` | string | *(optional)* Machine-matchable token tying this issue to a runtime fault class the kernel can diagnose. Vocabulary: `page-fault` (a load/store/instruction page fault), `illegal-instruction`. Absent ⇒ not runtime-matchable. |
 | `seen` | fixed-width int | *(optional)* A **5-digit zero-padded** counter (`00000`) the runtime self-healer increments **in place** each time it diagnoses this issue (Phase 10). Fixed width keeps the update a same-length overwrite; it must sit in the entry's **first 512-byte block** for the in-place write to target it. |
+| `escalated` | fixed-width flag | *(optional)* A **1-digit** flag (`0`/`1`) the runtime self-healer latches to `1` **in place** once `seen` crosses the escalation threshold (Phase 11), marking the issue chronically recurring. Same first-block / fixed-width rules as `seen`. |
 | `verification` | string | How to confirm the fix actually worked. |
 | `created` | date | ISO date the record was created (`YYYY-MM-DD`). |
 | `updated` | date | ISO date last updated. |
