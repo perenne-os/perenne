@@ -85,11 +85,22 @@ mod bare {
             mem::build_user_space(us, rtc)); // RTC MMIO mapped R-U into the server only
         sched::grant_cap(rtc_srv, EP_CAP, Capability::Endpoint(EP0));
 
+        // Phase 8 — capability delegation. `needy` holds NO RTC cap; it obtains
+        // Endpoint(EP0) by delegation from `broker` over the grant channel, then
+        // calls the RTC server with it. Spawn needy before broker so needy is
+        // recv-blocked on the grant channel when broker grants.
         let cu = ustack(core::ptr::addr_of!(US_CLIENT) as usize);
-        let client = sched::spawn_user("client", rtc_client, cu.1,
+        let needy = sched::spawn_user("needy", needy_task, cu.1,
             core::ptr::addr_of!(KS_CLIENT) as usize + TASK_STACK,
             mem::build_user_space(cu, NO_DEVICE));
-        sched::grant_cap(client, EP_CAP, Capability::Endpoint(EP0));
+        sched::grant_cap(needy, GRANT_CHAN_CAP, Capability::Endpoint(GRANT_EP));
+
+        let bru = ustack(core::ptr::addr_of!(US_BROKER) as usize);
+        let broker = sched::spawn_user("broker", broker_task, bru.1,
+            core::ptr::addr_of!(KS_BROKER) as usize + TASK_STACK,
+            mem::build_user_space(bru, NO_DEVICE));
+        sched::grant_cap(broker, GRANT_CHAN_CAP, Capability::Endpoint(GRANT_EP));
+        sched::grant_cap(broker, BROKER_RTC_SLOT, Capability::Endpoint(EP0));
 
         // rogue gets NO endpoint capability — its send must be refused.
         let ru = ustack(core::ptr::addr_of!(US_ROGUE) as usize);
@@ -316,6 +327,15 @@ mod bare {
     /// The cap slot the RTC server lets the kernel mint its reply cap into.
     const RTC_REPLY_SLOT: usize = 1;
 
+    /// The broker→needy delegation channel (Phase 8). Distinct from the RTC
+    /// endpoint EP0, whose cap the broker delegates over it.
+    const GRANT_EP: usize = 6;
+    /// needy/broker cap slots for the grant channel and the delegated cap.
+    const GRANT_CHAN_CAP: usize = 0; // Endpoint(GRANT_EP), held by both
+    const BROKER_RTC_SLOT: usize = 1; // broker's Endpoint(EP0) to delegate
+    const NEEDY_RTC_SLOT: usize = 1; // where needy receives the delegated RTC cap
+    const NEEDY_EMPTY_SLOT: usize = 3; // an empty slot the broker's bad grant names
+
     /// The healer's cap-table slot holding its `Endpoint(CRASH_EP)` capability
     /// (it `recv`s on this to learn of crashes). Restart caps live at slots
     /// 1.. so a crash notification's badge is directly the cap slot to use.
@@ -376,6 +396,7 @@ mod bare {
     type KStack = [u8; TASK_STACK];
     static mut KS_RTC: KStack = [0; TASK_STACK];
     static mut KS_CLIENT: KStack = [0; TASK_STACK];
+    static mut KS_BROKER: KStack = [0; TASK_STACK];
     static mut KS_ROGUE: KStack = [0; TASK_STACK];
     static mut KS_HEALER: KStack = [0; TASK_STACK];
     static mut KS_TRANSIENT: KStack = [0; TASK_STACK];
@@ -407,6 +428,8 @@ mod bare {
     static mut US_RTC: UStack = UStack([0; USER_STACK_SIZE]);
     #[link_section = ".user_data"]
     static mut US_CLIENT: UStack = UStack([0; USER_STACK_SIZE]);
+    #[link_section = ".user_data"]
+    static mut US_BROKER: UStack = UStack([0; USER_STACK_SIZE]);
     #[link_section = ".user_data"]
     static mut US_ROGUE: UStack = UStack([0; USER_STACK_SIZE]);
     #[link_section = ".user_data"]
@@ -462,6 +485,27 @@ mod bare {
             in("a2") 0usize,
             in("a3") 0usize,
             in("a4") 0usize,
+            options(nostack),
+        );
+        ret
+    }
+
+    /// grant syscall (a7 = 11): a0 = endpoint cap to send over, a1 = the
+    /// sender's source cap slot to delegate, a2 = badge. Returns a0 = 0 on
+    /// success, or `usize::MAX` if the endpoint cap or the source slot is
+    /// invalid.
+    ///
+    /// # Safety
+    /// Always sound; the kernel validates both capabilities.
+    #[inline(always)]
+    unsafe fn sys_grant(ep: usize, src_slot: usize, badge: usize) -> usize {
+        let ret;
+        core::arch::asm!(
+            "ecall",
+            in("a7") 11usize,
+            inout("a0") ep => ret,
+            in("a1") src_slot,
+            in("a2") badge,
             options(nostack),
         );
         ret
@@ -781,17 +825,39 @@ mod bare {
         }
     }
 
-    /// A client of the RTC server: `call` it (badge 1 = "report time") and
-    /// receive the live clock back, then exit with it — proving the value
-    /// crossed back from the server to the caller via call/reply.
+    /// `needy` (Phase 8): an RTC client that holds NO RTC capability. It blocks
+    /// receiving on the grant channel (naming NEEDY_RTC_SLOT as where the kernel
+    /// installs the delegated cap), then `call`s the RTC server on that
+    /// now-delegated capability and exits with the live clock — proof that
+    /// authority reached it only by runtime delegation.
     #[no_mangle]
     #[link_section = ".user_text"]
-    extern "C" fn rtc_client() -> ! {
-        // SAFETY: we hold the endpoint cap at EP_CAP; call sends the request and
-        // blocks for the reply (the clock value).
+    extern "C" fn needy_task() -> ! {
+        // SAFETY: we hold the grant-channel cap; recv blocks until the broker
+        // delegates the RTC endpoint cap into NEEDY_RTC_SLOT (badge discarded),
+        // then we call the RTC server on it.
         unsafe {
-            let t = sys_call(EP_CAP, 1);
+            let _ = sys_recv(GRANT_CHAN_CAP, NEEDY_RTC_SLOT);
+            let t = sys_call(NEEDY_RTC_SLOT, 1);
             sys_exit(t)
+        }
+    }
+
+    /// `broker` (Phase 8): holds the RTC endpoint cap (BROKER_RTC_SLOT) and the
+    /// grant-channel cap (GRANT_CHAN_CAP). It first attempts a bad grant (an
+    /// empty source slot → rejected, proving the unforgeability guard), then
+    /// delegates the RTC endpoint cap to whoever is waiting on the grant channel
+    /// (needy), and exits.
+    #[no_mangle]
+    #[link_section = ".user_text"]
+    extern "C" fn broker_task() -> ! {
+        // SAFETY: grant is always sound; the kernel validates both caps. The
+        // first call delegates a slot we don't hold (rejected); the second
+        // delegates our real RTC endpoint cap to the recv-blocked needy.
+        unsafe {
+            let _ = sys_grant(GRANT_CHAN_CAP, NEEDY_EMPTY_SLOT, 0);
+            let _ = sys_grant(GRANT_CHAN_CAP, BROKER_RTC_SLOT, 1);
+            sys_exit(0)
         }
     }
 
