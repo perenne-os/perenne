@@ -657,6 +657,48 @@ fn mint_reply_cap(s: &mut Scheduler, server: usize, caller: usize, slot: usize) 
     }
 }
 
+/// Revoke endpoint `ep` from every task except `except` (the caller, which keeps
+/// its own cap): clear all `Endpoint(ep)` capabilities from their cap tables.
+/// Returns the number of capabilities cleared. Transitive — every copy in every
+/// CSpace is invalidated at once, with no derivation tree.
+#[cfg(target_arch = "riscv64")]
+pub fn revoke_endpoint(ep: EndpointId, except: usize) -> usize {
+    SCHED.with(|s| {
+        let mut n = 0;
+        for i in 0..MAX_TASKS {
+            if i == except {
+                continue;
+            }
+            if let Some(task) = s.tasks[i].as_mut() {
+                n += crate::cap::revoke_in_caps(&mut task.caps, ep);
+            }
+        }
+        n
+    })
+}
+
+/// Service a `revoke` syscall: `a0` = the slot of an `Endpoint` cap the caller
+/// holds. Revokes that endpoint from every *other* holder (the caller keeps its
+/// own), logs the count, and returns it in `a0` — or `usize::MAX` if the caller
+/// does not hold the endpoint capability (the authorization guard).
+#[cfg(target_arch = "riscv64")]
+pub fn ipc_revoke(frame: &mut crate::trap::TrapFrame) {
+    let ep_idx = frame.regs[9]; // a0
+    let resolved = SCHED.with(|s| {
+        let cur = s.current;
+        let ep = cap_lookup(&s.tasks[cur].as_ref().unwrap().caps, ep_idx)?;
+        Some((cur, ep, s.tasks[cur].as_ref().unwrap().name))
+    });
+    match resolved {
+        None => frame.regs[9] = usize::MAX,
+        Some((cur, ep, name)) => {
+            let n = revoke_endpoint(ep, cur);
+            crate::println!("cap: '{name}' revoked endpoint {ep} from {n} holder(s)");
+            frame.regs[9] = n;
+        }
+    }
+}
+
 /// Install `cap` into `task`'s cap table at `slot`; a no-op if `slot` is out of
 /// range (a receiver bug, not fatal). Generalizes the slot-bounded write
 /// `mint_reply_cap` performs.

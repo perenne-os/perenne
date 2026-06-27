@@ -37,6 +37,9 @@ pub enum Syscall {
     /// `grant(ep_cap, src_cap_slot, badge)` — delegate (copy) the capability in
     /// the sender's `src_cap_slot` to a peer recv-blocked on `ep_cap`.
     Grant,
+    /// `revoke(ep_cap)` — revoke an endpoint capability from every other holder
+    /// (the caller must hold it; it keeps its own).
+    Revoke,
     /// An unrecognized syscall number (a user bug, not a kernel bug).
     Unknown(usize),
 }
@@ -55,6 +58,7 @@ pub fn decode_syscall(a7: usize) -> Syscall {
         9 => Syscall::Getrandom,
         10 => Syscall::WaitIrq,
         11 => Syscall::Grant,
+        12 => Syscall::Revoke,
         n => Syscall::Unknown(n),
     }
 }
@@ -153,6 +157,7 @@ mod tests {
     fn decodes_wait_irq_syscall() {
         assert_eq!(decode_syscall(10), Syscall::WaitIrq);
         assert_eq!(decode_syscall(11), Syscall::Grant);
+        assert_eq!(decode_syscall(12), Syscall::Revoke);
     }
 }
 
@@ -221,6 +226,10 @@ pub fn dispatch(frame: &mut crate::trap::TrapFrame) -> Outcome {
         }
         Syscall::Grant => {
             crate::sched::ipc_grant(frame);
+            Outcome::Resume
+        }
+        Syscall::Revoke => {
+            crate::sched::ipc_revoke(frame);
             Outcome::Resume
         }
         Syscall::Unknown(_) => {
