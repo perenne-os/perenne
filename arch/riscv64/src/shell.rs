@@ -104,7 +104,7 @@ fn dispatch(cmd: &str) {
             let mut i = 0;
             while let Some((id, title, seen, escalated)) = crate::heal::entry(i) {
                 if escalated {
-                    crate::println!("{id} (seen {seen}, escalated)  {title}");
+                    crate::println!("{id} (seen {seen}, escalated, quarantined)  {title}");
                 } else {
                     crate::println!("{id} (seen {seen})  {title}");
                 }
