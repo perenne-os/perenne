@@ -399,10 +399,30 @@ than the recent increments:
   self-demo (reliable serial-input injection isn't available in this CI harness;
   a live keystroke reaching the shell is verified manually). QEMU-only.
 
-## Phase 10+ — Breadth
+## Phase 10 — Revisable knowledge: the "seen N times" counter  *(done — 2026-06-27)*
 
-- **Goal:** the long tail — a growable/revisable KB (in-place updates, a
-  free-block allocator), reliable live-keystroke shell testing + a richer command
-  set, more hardware (physical RISC-V board boot 4c, ARM/phones), a fuller HAL,
-  and more device drivers.
+- **Goal:** make the organism's memory **revisable in place** — the self-healer
+  increments a per-entry "seen N times" counter on each recurring diagnosis and
+  persists it on disk, so the count accumulates across reboots. The seed of the
+  organism noticing *recurrence*.
+- **You learn:** that **in-place mutation needs fixed-width fields** (a 5-digit
+  `seen: 00000` keeps the update a same-length overwrite — no shifting, no
+  rewrite, no free-block allocator); and the same off-the-crash-path persistence
+  discipline as Phase 7 (see
+  [learning note 0028](../learning/0028-revisable-kb.md)).
+- **Done when:** ✅ `./tools/test-qemu.ps1` shows `heal: persisted KB-0005
+  (seen 4)` on the first boot and `heal: persisted KB-0005 (seen 8)` on a second
+  boot of the same image (the counter carried over and grew), with the shell `kb`
+  command showing `KB-0005 (seen 8)`. A fixed-width `seen` field +
+  `kb::set_seen_in_block` (pure, host-tested); `heal` per-entry counter + dirty
+  flag; the KB-writer persists changed counters in place via `fs_write_block`.
+  QEMU-only.
+
+## Phase 11+ — Breadth
+
+- **Goal:** the long tail — counter-driven escalation (flag a chronically
+  recurring fault), growable/variable-length records (a free-block allocator,
+  multi-block directories), reliable live-keystroke shell testing + a richer
+  command set, more hardware (physical RISC-V board boot 4c, ARM/phones), a
+  fuller HAL, and more device drivers.
 - **Done when:** never, really — this is where it becomes a real, growing OS.
