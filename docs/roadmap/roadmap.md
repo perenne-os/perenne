@@ -418,11 +418,30 @@ than the recent increments:
   flag; the KB-writer persists changed counters in place via `fs_write_block`.
   QEMU-only.
 
-## Phase 11+ — Breadth
+## Phase 11 — Counter-driven escalation  *(done — 2026-06-27)*
 
-- **Goal:** the long tail — counter-driven escalation (flag a chronically
-  recurring fault), growable/variable-length records (a free-block allocator,
-  multi-block directories), reliable live-keystroke shell testing + a richer
-  command set, more hardware (physical RISC-V board boot 4c, ARM/phones), a
-  fuller HAL, and more device drivers.
+- **Goal:** the organism's first **adaptive** behavior — when an issue's
+  cross-boot `seen` count crosses a threshold, escalate it (latch a chronic
+  flag, persist it, report "flag for triage"). A decision driven by accumulated
+  history.
+- **You learn:** to make a decision **provably require persistent memory** (set
+  the threshold above one boot's count, so escalation can only happen because
+  the counter carried over); and that a second fixed-width field rides Phase
+  10's in-place update path almost for free (see
+  [learning note 0029](../learning/0029-counter-driven-escalation.md)).
+- **Done when:** ✅ `./tools/test-qemu.ps1` shows KB-0005 reach `seen 4` on the
+  first boot (not escalated) and, on a second boot of the same image, cross the
+  threshold at `seen 6` → `heal: KB-0005 escalated (seen 6) -- recurring; flag
+  for triage`, persisted (`persisted KB-0005 (seen 8, escalated)`). A
+  fixed-width `escalated` flag + a generalized `kb` in-place writer; `heal`
+  threshold + latch; the KB-writer persists both fields together. Escalation
+  changes the organism's reporting/knowledge, not the restart cage. QEMU-only.
+
+## Phase 12+ — Breadth
+
+- **Goal:** the long tail — act on escalation (suppress futile restarts /
+  quarantine a chronically crashing component), growable/variable-length records
+  (a free-block allocator, multi-block directories), reliable live-keystroke
+  shell testing + a richer command set, more hardware (physical RISC-V board
+  boot 4c, ARM/phones), a fuller HAL, and more device drivers.
 - **Done when:** never, really — this is where it becomes a real, growing OS.

@@ -38,3 +38,4 @@ This folder holds the author's learning notes as systems-programming concepts cl
 - [0026 — Capability delegation through IPC (Phase 8)](0026-capability-delegation.md)
 - [0027 — A diagnosis-aware shell (and why it polls) (Phase 9)](0027-interactive-shell.md)
 - [0028 — Revisable knowledge: the seen-N-times counter (Phase 10)](0028-revisable-kb.md)
+- [0029 — Counter-driven escalation: flagging a chronic fault (Phase 11)](0029-counter-driven-escalation.md)
