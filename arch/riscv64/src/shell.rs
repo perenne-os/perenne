@@ -102,8 +102,12 @@ fn dispatch(cmd: &str) {
         "help" => crate::println!("commands: help, kb, diag"),
         "kb" => {
             let mut i = 0;
-            while let Some((id, title, seen)) = crate::heal::entry(i) {
-                crate::println!("{id} (seen {seen})  {title}");
+            while let Some((id, title, seen, escalated)) = crate::heal::entry(i) {
+                if escalated {
+                    crate::println!("{id} (seen {seen}, escalated)  {title}");
+                } else {
+                    crate::println!("{id} (seen {seen})  {title}");
+                }
                 i += 1;
             }
             if i == 0 {
