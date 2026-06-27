@@ -356,10 +356,31 @@ than the recent increments:
   KB-writer task; `mkfs` pads the image with spare capacity. Append-only
   (in-place updates, deletion, and a free-block allocator deferred). QEMU-only.
 
-## Phase 8+ — Breadth
+## Phase 8 — Capability delegation through IPC  *(done — 2026-06-27)*
 
-- **Goal:** more hardware (ARM/phones), a fuller HAL, more device drivers, and
-  the long tail — including a growable/revisable KB (in-place updates, a
-  free-block allocator), capability delegation, and the interactive-shell
-  direction.
+- **Goal:** let a component delegate a capability it holds to another component
+  at runtime, kernel-mediated and unforgeable — making the authority graph
+  **dynamic** instead of frozen at boot. The foundational capability operation
+  ADR 0007 (extensibility via capability-holding components) needs.
+- **You learn:** that delegation is the kernel's existing reply-cap step made
+  available to components (a component, not just the kernel, can install a cap
+  into a peer); why it stays unforgeable (the kernel copies a cap the sender
+  provably holds); and copy vs move/attenuated delegation (see
+  [learning note 0026](../learning/0026-capability-delegation.md)).
+- **Done when:** ✅ `./tools/test-qemu.ps1` shows a `broker` delegate the RTC
+  endpoint capability to a `needy` client that holds **no** RTC cap (`cap:
+  'broker' delegated Endpoint(0) to 'needy'`), which then reads the live clock
+  through it (`sched: task 'needy' exited (code <ns>)`) — and a grant of a slot
+  the broker doesn't hold is refused (`cap: 'broker' grant rejected (no
+  capability in slot)`). New: a `grant` syscall (a7 = 11), pure `cap::cap_at`
+  (the unforgeability guard), `ipc_grant` + `install_cap` riding the send/recv
+  rendezvous, and `Task.pending_grant`. Copy semantics; move/attenuation/
+  revocation deferred. QEMU-only.
+
+## Phase 9+ — Breadth
+
+- **Goal:** the long tail — a growable/revisable KB (in-place updates, a
+  free-block allocator), an interactive UART-input shell that queries the
+  self-healing organism, more hardware (physical RISC-V board boot 4c,
+  ARM/phones), a fuller HAL, and more device drivers.
 - **Done when:** never, really — this is where it becomes a real, growing OS.

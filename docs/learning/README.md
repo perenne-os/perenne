@@ -35,3 +35,4 @@ This folder holds the author's learning notes as systems-programming concepts cl
 - [0023 — A minimal filesystem (Phase 6b)](0023-minimal-filesystem.md)
 - [0024 — The living knowledge base (Phase 6c)](0024-living-knowledge-base.md)
 - [0025 — Write-back: the organism learns across reboots (Phase 7)](0025-write-back-learning-organism.md)
+- [0026 — Capability delegation through IPC (Phase 8)](0026-capability-delegation.md)
