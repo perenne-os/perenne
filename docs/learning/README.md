@@ -32,3 +32,6 @@ This folder holds the author's learning notes as systems-programming concepts cl
 - [0020 — The first device interrupt (the PLIC)](0020-plic-interrupts.md)
 - [0021 — One-shot reply capabilities](0021-reply-capabilities.md)
 - [0022 — Block storage (virtio-blk)](0022-block-storage.md)
+- [0023 — A minimal filesystem (Phase 6b)](0023-minimal-filesystem.md)
+- [0024 — The living knowledge base (Phase 6c)](0024-living-knowledge-base.md)
+- [0025 — Write-back: the organism learns across reboots (Phase 7)](0025-write-back-learning-organism.md)

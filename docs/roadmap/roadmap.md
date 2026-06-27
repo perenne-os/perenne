@@ -331,9 +331,35 @@ than the recent increments:
   runtime-matchable entries; patients gate on the load. Write-back (recording a
   new issue to disk) is deferred — it needs a writable FS layer. QEMU-only.
 
-## Phase 7+ — Breadth
+## Phase 7 — Write-back & the learning organism  *(done — 2026-06-26)*
+
+- **Goal:** the *write half* of Phase 6's storage arc. The filesystem gains an
+  append-only write path, and the self-healer records a newly-seen crash class
+  to disk — so a **second boot of the same image** loads that entry and
+  diagnoses the formerly-novel crash. The organism learns across reboots, the
+  payoff [ADR 0005](../decisions/0005-self-healing-knowledge-organism.md) is
+  built around (and the half learning note 0024 named as deferred).
+- **You learn:** that the kernel can *name* a symptom it has not *catalogued*
+  (a novel crash = `cause_token` Some but `diagnose` None); crash-consistency
+  from write *ordering* (data → directory → superblock-last commit point, no
+  journal, no in-place mutation); and that the write — like 6c's read — happens
+  off the crash path, gated ~one-block-per-tick by the `blk` IRQ-recovery
+  constraint (see [learning note 0025](../learning/0025-write-back-learning-organism.md)).
+- **Done when:** ✅ `./tools/test-qemu.ps1` runs **two boots over one disk
+  image**: boot 1 (KB-0005 only) meets a novel illegal-instruction crash with no
+  KB entry and `heal: recorded KB-0006 (illegal-instruction) to disk`; boot 2
+  (the same image, not rebuilt) `heal: loaded 2 KB entries from disk` and
+  `heal: diagnosed KB-0006 ...` — keyed by the entry the organism wrote itself
+  the previous boot. New: `fs::append_plan` + `kb::serialize` (pure,
+  host-tested), a `blk` write badge, a kernel append path (superblock-last
+  commit), an `IllegalInstruction` cause + token, a novel-cause mailbox, and a
+  KB-writer task; `mkfs` pads the image with spare capacity. Append-only
+  (in-place updates, deletion, and a free-block allocator deferred). QEMU-only.
+
+## Phase 8+ — Breadth
 
 - **Goal:** more hardware (ARM/phones), a fuller HAL, more device drivers, and
-  the long tail — including the deferred capability-delegation and interactive-
-  shell directions.
+  the long tail — including a growable/revisable KB (in-place updates, a
+  free-block allocator), capability delegation, and the interactive-shell
+  direction.
 - **Done when:** never, really — this is where it becomes a real, growing OS.

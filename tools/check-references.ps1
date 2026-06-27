@@ -13,6 +13,13 @@ $ErrorActionPreference = "Stop"
 # Repo root = parent of this script's folder.
 $root = Split-Path -Parent $PSScriptRoot
 
+# KB ids the self-healing organism WRITES at runtime, which therefore have no
+# committed knowledge-base/entries/*.md (Phase 7 write-back). KB-0006 must stay
+# absent from the repo: it is the "novel" crash the organism records to disk on
+# the first boot — committing a file would make `mkfs` pack it and defeat the
+# premise. Docs may cite it; it just won't resolve to a file.
+$runtimeGeneratedKb = @('KB-0006')
+
 $files = Get-ChildItem -Path $root -Recurse -Filter *.md -File |
     Where-Object {
         $_.FullName -notmatch '[\\/]docs[\\/]superpowers[\\/]' -and
@@ -34,6 +41,7 @@ foreach ($f in $files) {
         # 1) KB-#### id -> entries/KB-####.md must exist
         foreach ($m in [regex]::Matches($line, 'KB-(\d{4})')) {
             $id = $m.Value
+            if ($runtimeGeneratedKb -contains $id) { continue }  # written at runtime, no repo file
             if (-not (Test-Path -LiteralPath (Join-Path $root "knowledge-base/entries/$id.md"))) {
                 $problems.Add(("{0}:{1}: references {2} but knowledge-base/entries/{2}.md does not exist" -f $rel, $lineNo, $id))
             }
