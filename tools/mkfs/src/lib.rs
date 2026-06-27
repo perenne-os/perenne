@@ -3,7 +3,7 @@
 
 use kernel_common::fs::{
     block_count, DirEntry, Superblock, BLOCK_SIZE, DATA_START_BLOCK, DIRENTS_PER_BLOCK,
-    DIRENT_SIZE, DIR_BLOCK, FS_MAGIC, FS_VERSION,
+    DIRENT_SIZE, DIR_BLOCK, FS_MAGIC, FS_VERSION, SPARE_BLOCKS,
 };
 
 /// Build a raw disk image: block 0 superblock, block 1 directory, block 2+
@@ -21,7 +21,10 @@ pub fn build_image(files: &[(&str, &[u8])]) -> Vec<u8> {
         data_blocks += nb;
     }
     let total_blocks = DATA_START_BLOCK + data_blocks;
-    let mut img = vec![0u8; total_blocks as usize * BLOCK_SIZE];
+    // Pad the file with spare capacity past the used blocks so the in-kernel
+    // writer has device room to append entries (the organism's write-back).
+    let device_blocks = total_blocks + SPARE_BLOCKS;
+    let mut img = vec![0u8; device_blocks as usize * BLOCK_SIZE];
 
     let sb = Superblock {
         magic: FS_MAGIC,
@@ -71,5 +74,16 @@ mod tests {
         assert_eq!(&img[a_off..a_off + 2], b"hi");
         let b_off = b.start_block as usize * BLOCK_SIZE;
         assert_eq!(&img[b_off..b_off + 600], &big[..]);
+    }
+
+    #[test]
+    fn image_carries_spare_capacity_past_used_blocks() {
+        use kernel_common::fs::SPARE_BLOCKS;
+        let img = build_image(&[("alpha", b"hi")]);
+        let sb = Superblock::decode(&img[0..BLOCK_SIZE]).expect("valid superblock");
+        // used: superblock + dir + ceil(2/512)=1 = 3 blocks
+        assert_eq!(sb.total_blocks, 3);
+        // but the file is padded with spare blocks for in-kernel appends
+        assert_eq!(img.len(), (sb.total_blocks + SPARE_BLOCKS) as usize * BLOCK_SIZE);
     }
 }
