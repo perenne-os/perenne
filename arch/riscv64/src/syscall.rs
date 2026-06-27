@@ -34,6 +34,9 @@ pub enum Syscall {
     Getrandom,
     /// `wait_irq(cap)` — block until the device interrupt named by the cap.
     WaitIrq,
+    /// `grant(ep_cap, src_cap_slot, badge)` — delegate (copy) the capability in
+    /// the sender's `src_cap_slot` to a peer recv-blocked on `ep_cap`.
+    Grant,
     /// An unrecognized syscall number (a user bug, not a kernel bug).
     Unknown(usize),
 }
@@ -51,6 +54,7 @@ pub fn decode_syscall(a7: usize) -> Syscall {
         8 => Syscall::Reply,
         9 => Syscall::Getrandom,
         10 => Syscall::WaitIrq,
+        11 => Syscall::Grant,
         n => Syscall::Unknown(n),
     }
 }
@@ -148,6 +152,7 @@ mod tests {
     #[test]
     fn decodes_wait_irq_syscall() {
         assert_eq!(decode_syscall(10), Syscall::WaitIrq);
+        assert_eq!(decode_syscall(11), Syscall::Grant);
     }
 }
 
