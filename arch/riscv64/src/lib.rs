@@ -18,6 +18,10 @@ pub mod timer;
 #[cfg(target_arch = "riscv64")]
 pub mod uart;
 
+// The shell's `LineBuffer` is pure (host-tested); its device/IRQ loop is gated
+// inside the module.
+pub mod shell;
+
 /// Trap handling: pure decoding logic (no asm, host-testable); the gated parts (entry, dispatcher, init) live inside.
 pub mod trap;
 
