@@ -28,3 +28,43 @@ pub unsafe fn put(base: usize, reg_shift: u32, byte: u8) {
         core::ptr::write_volatile(thr, byte);
     }
 }
+
+/// LSR "data ready" bit — a received byte is waiting in the RBR.
+const LSR_DR: u8 = 0x01;
+/// IER "received-data-available interrupt enable" bit.
+const IER_RDA: u8 = 0x01;
+
+/// Read one received byte from the ns16550 at `base` (registers spaced by
+/// `reg_shift`) iff the line status register reports data ready; `None`
+/// otherwise. Reading the receive holding register (RBR, offset 0) deasserts
+/// the device's RX interrupt.
+///
+/// # Safety
+/// `base` must be the MMIO base of an ns16550 UART mapped readable/writable in
+/// the current address space.
+#[cfg(target_arch = "riscv64")]
+pub unsafe fn get(base: usize, reg_shift: u32) -> Option<u8> {
+    let lsr = (base + (5usize << reg_shift)) as *const u8;
+    let rbr = base as *const u8;
+    // SAFETY: caller guarantees a mapped ns16550 register window.
+    unsafe {
+        if core::ptr::read_volatile(lsr) & LSR_DR == 0 {
+            return None;
+        }
+        Some(core::ptr::read_volatile(rbr))
+    }
+}
+
+/// Enable the received-data-available interrupt (IER bit 0, offset `1 << shift`).
+/// OpenSBI already configured the line; we only turn on RX interrupts.
+///
+/// # Safety
+/// As [`get`]: `base` must be a mapped ns16550 register window.
+#[cfg(target_arch = "riscv64")]
+pub unsafe fn enable_rx_interrupt(base: usize, reg_shift: u32) {
+    let ier = (base + (1usize << reg_shift)) as *mut u8;
+    // SAFETY: caller guarantees a mapped ns16550 register window.
+    unsafe {
+        core::ptr::write_volatile(ier, IER_RDA);
+    }
+}
