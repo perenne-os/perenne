@@ -426,7 +426,14 @@ pub fn exit_current(reason: ExitReason) -> ! {
                             "heal: diagnosed {} ({}) -> playbook: {}",
                             issue.id(), issue.title(), issue.playbook()
                         );
-                        crate::heal::note_diagnosis(issue);
+                        // Phase 11: if this diagnosis just crossed the escalation
+                        // threshold, log the one-time event.
+                        if let Some(seen) = crate::heal::note_diagnosis(issue) {
+                            crate::println!(
+                                "heal: {} escalated (seen {seen}) -- recurring; flag for triage",
+                                issue.id()
+                            );
+                        }
                     }
                     None => {
                         crate::println!("heal: no known issue for {cause:?} (recording for write-back)");
