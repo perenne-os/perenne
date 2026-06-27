@@ -37,6 +37,9 @@ Plain-language definitions of terms used throughout these docs. Aimed at someone
 - **M-mode / S-mode / U-mode** — RISC-V privilege levels: machine (firmware, most privileged), supervisor (the kernel), user (applications).
 - **Linker script** — instructions to the linker about where in memory each part of a binary must be placed; essential on bare metal where addresses are physical and fixed.
 - **wfi (wait for interrupt)** — RISC-V instruction that puts a hart to sleep until an interrupt arrives; our kernel's idle loop.
+- **Shell** — an interactive console you type commands at. This project's shell (Phase 9) is a kernel task whose `kb`/`diag` commands query the self-healing organism (the loaded knowledge base and the last diagnosis), making the OS's self-knowledge interrogable by a human.
+- **Line discipline** — the small layer that turns raw received bytes into edited lines: echoing printable characters, handling backspace, and completing a line on Enter. Pure and host-tested here (`LineBuffer`).
+- **UART receive (RX)** — reading bytes the UART has received (the RBR register when the line-status "data ready" bit is set), as opposed to transmit. The project's first device *input*. The shell **polls** RX rather than using its interrupt, because QEMU's edge-delivered PLIC drops the asynchronous re-assertions of character input (it suits one-shot completion interrupts like rng/blk, not a key-at-a-time stream).
 - **Post-quantum cryptography (PQC)** — encryption algorithms designed to resist attacks from future quantum computers; ordinary software running on ordinary chips.
 - **ADR (Architecture Decision Record)** — a short, dated note recording one significant decision and the reasoning behind it.
 - **Self-healing / knowledge organism** — this project's support model: the OS keeps a growing memory of issues and proven fixes and consults itself to diagnose and repair problems.

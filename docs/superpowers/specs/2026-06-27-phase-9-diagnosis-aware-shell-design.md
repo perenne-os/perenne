@@ -2,8 +2,21 @@
 
 **Status:** approved 2026-06-27 (user authorized completing the phase end-to-end)
 **Priority served:** #2 (the self-healing organism) and principle #5 ("the OS
-should explain itself"). The first interactive surface, and the first
-**interrupt-driven device input** in the project.
+should explain itself"). The first interactive surface, and the first device
+**input** in the project.
+
+**Implementation revision (2026-06-27, during build):** two parts of this design
+changed when they met reality, and the shipped code + learning note 0027 are
+authoritative. (1) **The shell polls UART RX rather than using the RX
+interrupt** — QEMU's PLIC only asserts SEIP on the rising edge of an enabled
+source (note 0020), which suits one-shot completion IRQs (rng/blk) but drops the
+asynchronous re-assertions of character input; polling is reliable. (2) **The
+automated proof is a boot self-demo, not a live-keystroke interactive boot** —
+reliable serial-input injection was not available in the CI harness on this
+platform (`-serial stdio` over a piped stdin delivers only one byte; a
+listening-socket chardev is blocked). A single live keystroke reaching the shell
+was confirmed manually. The sections below are the original design; read them
+with these two revisions in mind.
 
 ## The gap
 

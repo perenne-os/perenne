@@ -377,10 +377,32 @@ than the recent increments:
   rendezvous, and `Task.pending_grant`. Copy semantics; move/attenuation/
   revocation deferred. QEMU-only.
 
-## Phase 9+ — Breadth
+## Phase 9 — Diagnosis-aware interactive shell  *(done — 2026-06-27)*
+
+- **Goal:** the first interactive surface — a console whose commands let a human
+  *interrogate the self-healing organism* (`kb` lists the loaded knowledge base,
+  `diag` shows the last diagnosis). Introduces the project's first device
+  **input** (UART receive). Principle #5 ("the OS should explain itself") made
+  concrete.
+- **You learn:** a UART receive path + a pure line discipline; that the shell is
+  a kernel task because the console is kernel-owned; and — the real lesson — why
+  *character input does not suit QEMU's edge-delivered PLIC* (it drops async
+  re-assertions that one-shot completion IRQs never hit), so the console **polls**
+  while rng/blk stay interrupt-driven (see
+  [learning note 0027](../learning/0027-interactive-shell.md)).
+- **Done when:** ✅ `./tools/test-qemu.ps1` shows the shell answer `help`/`kb`/
+  `diag` against the organism with live data —
+  `KB-0005  User-space component terminated by a fatal fault` and
+  `last: KB-0005 -> Restart the component, up to a bounded number of retries.` A
+  pure host-tested `LineBuffer`; `uart::get` + UART-IRQ device-tree discovery;
+  `heal::entry`/`last_diagnosis`. The command pipeline is asserted via a boot
+  self-demo (reliable serial-input injection isn't available in this CI harness;
+  a live keystroke reaching the shell is verified manually). QEMU-only.
+
+## Phase 10+ — Breadth
 
 - **Goal:** the long tail — a growable/revisable KB (in-place updates, a
-  free-block allocator), an interactive UART-input shell that queries the
-  self-healing organism, more hardware (physical RISC-V board boot 4c,
-  ARM/phones), a fuller HAL, and more device drivers.
+  free-block allocator), reliable live-keystroke shell testing + a richer command
+  set, more hardware (physical RISC-V board boot 4c, ARM/phones), a fuller HAL,
+  and more device drivers.
 - **Done when:** never, really — this is where it becomes a real, growing OS.
