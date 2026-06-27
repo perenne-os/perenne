@@ -33,6 +33,11 @@ pub unsafe fn put(base: usize, reg_shift: u32, byte: u8) {
 const LSR_DR: u8 = 0x01;
 /// IER "received-data-available interrupt enable" bit.
 const IER_RDA: u8 = 0x01;
+/// FCR: enable FIFOs + clear RX/TX FIFOs, with a 1-byte RX trigger level (bits
+/// 7:6 = 00). A 1-byte trigger makes every received byte raise the RX
+/// interrupt, instead of only firing at a multi-byte threshold (or the slow
+/// character-timeout), which would drop single keystrokes.
+const FCR_RX_1BYTE: u8 = 0x07;
 
 /// Read one received byte from the ns16550 at `base` (registers spaced by
 /// `reg_shift`) iff the line status register reports data ready; `None`
@@ -63,8 +68,11 @@ pub unsafe fn get(base: usize, reg_shift: u32) -> Option<u8> {
 #[cfg(target_arch = "riscv64")]
 pub unsafe fn enable_rx_interrupt(base: usize, reg_shift: u32) {
     let ier = (base + (1usize << reg_shift)) as *mut u8;
+    let fcr = (base + (2usize << reg_shift)) as *mut u8;
     // SAFETY: caller guarantees a mapped ns16550 register window.
     unsafe {
+        // 1-byte RX trigger so every keystroke raises the interrupt.
+        core::ptr::write_volatile(fcr, FCR_RX_1BYTE);
         core::ptr::write_volatile(ier, IER_RDA);
     }
 }

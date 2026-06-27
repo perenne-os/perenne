@@ -263,19 +263,15 @@ mod bare {
             println!("blk: no virtio-blk device found");
         }
 
-        // Phase 9 — the diagnosis-aware shell: a kernel task driven by UART RX
-        // interrupts that queries the self-healing organism (kb / diag). The
-        // UART is kernel-owned, so the shell drives the existing console and
-        // reads `heal` directly.
+        // Phase 9 — the diagnosis-aware shell: a kernel task that polls UART RX
+        // and queries the self-healing organism (kb / diag). The UART is
+        // kernel-owned, so the shell drives the existing console and reads
+        // `heal` directly. (It polls rather than using the UART RX interrupt —
+        // see `shell::shell_task` and learning note 0020 for why character input
+        // does not suit QEMU's edge-delivered PLIC.)
         shell::init(machine.uart_base, machine.uart_reg_shift);
-        let shell = sched::spawn("shell", shell::shell_task,
+        let _shell = sched::spawn("shell", shell::shell_task,
             core::ptr::addr_of!(KS_SHELL) as usize + TASK_STACK);
-        plic::init(machine.plic_base); // idempotent
-        plic::set_priority(machine.uart_irq, 1);
-        plic::enable(machine.uart_irq);
-        // SAFETY: the trap handler + PLIC service external interrupts.
-        unsafe { csr::sie_enable_external() };
-        sched::grant_cap(shell, 0, Capability::Interrupt(machine.uart_irq));
 
         sched::spawn("idle", idle, core::ptr::addr_of!(KS_IDLE) as usize + TASK_STACK);
 

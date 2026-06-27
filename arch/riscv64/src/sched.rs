@@ -635,27 +635,6 @@ fn mint_reply_cap(s: &mut Scheduler, server: usize, caller: usize, slot: usize) 
     }
 }
 
-/// Block a **kernel** (S-mode) task on the device interrupt named by the
-/// `Interrupt` capability at `cap_idx` — the kernel-task counterpart of the
-/// `wait_irq` syscall (cf. `recv_message`/`call_message`). Completes the
-/// previous PLIC claim (re-arming the source), parks `WaitingIrq`, and returns
-/// when the external-interrupt handler wakes the task. `false` if the caller
-/// lacks the capability.
-#[cfg(target_arch = "riscv64")]
-pub fn wait_irq_for(cap_idx: usize) -> bool {
-    let irq = SCHED.with(|s| {
-        crate::cap::interrupt_irq(&s.tasks[s.current].as_ref().unwrap().caps, cap_idx)
-    });
-    match irq {
-        None => false,
-        Some(irq) => {
-            crate::plic::complete(irq);
-            park_current(TaskState::WaitingIrq(irq));
-            true
-        }
-    }
-}
-
 /// Install `cap` into `task`'s cap table at `slot`; a no-op if `slot` is out of
 /// range (a receiver bug, not fatal). Generalizes the slot-bounded write
 /// `mint_reply_cap` performs.

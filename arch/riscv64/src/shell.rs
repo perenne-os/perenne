@@ -82,10 +82,6 @@ static UART_BASE: AtomicUsize = AtomicUsize::new(0);
 #[cfg(target_arch = "riscv64")]
 static UART_SHIFT: AtomicUsize = AtomicUsize::new(0);
 
-/// The cap slot the shell holds its `Interrupt(uart_irq)` capability in.
-#[cfg(target_arch = "riscv64")]
-const SHELL_IRQ_CAP: usize = 0;
-
 /// Record the UART location for the shell task. Called from `kmain`.
 #[cfg(target_arch = "riscv64")]
 pub fn init(base: usize, reg_shift: u32) {
@@ -122,26 +118,58 @@ fn dispatch(cmd: &str) {
     }
 }
 
-/// The shell task: enable UART RX, announce readiness, then loop blocking on the
-/// UART IRQ, draining received bytes through the line discipline, and
-/// dispatching each completed command against the organism.
+/// Run each command in `["help", "kb", "diag"]` through the real `LineBuffer`
+/// and `dispatch`, as if typed — a deterministic boot-time demonstration that
+/// the command pipeline assembles a line and answers it against the organism.
+/// (Reliable serial-input injection is not available in the CI harness on this
+/// platform; live keystrokes over the poll loop are verified manually. This
+/// exercises everything but the `uart::get` hardware read.)
+#[cfg(target_arch = "riscv64")]
+fn self_demo() {
+    crate::println!("shell: demo");
+    for cmd in ["help", "kb", "diag"] {
+        crate::println!("> {cmd}");
+        let mut lb = LineBuffer::new();
+        for &b in cmd.as_bytes() {
+            let _ = lb.push(b);
+        }
+        let _ = lb.push(b'\r');
+        dispatch(lb.take());
+    }
+    crate::println!("shell: demo done");
+}
+
+/// The shell task: configure UART RX, announce readiness, then poll the receive
+/// register, feeding each byte through the line discipline and dispatching each
+/// completed command against the organism. It yields between polls so other
+/// tasks run.
+///
+/// Why polling, not the UART RX interrupt: QEMU's PLIC only asserts SEIP on the
+/// *rising edge* of an enabled source (see learning note 0020). That delivers
+/// cleanly for the one-shot *completion* interrupts of the rng/blk drivers, but
+/// not for the repeated, asynchronous re-assertions of character input, which
+/// drops keystrokes. Polling the data-ready bit is the reliable choice for a
+/// console; the completion-driven devices remain interrupt-driven.
 #[cfg(target_arch = "riscv64")]
 pub extern "C" fn shell_task() -> ! {
     let base = UART_BASE.load(Ordering::Relaxed);
     let shift = UART_SHIFT.load(Ordering::Relaxed) as u32;
     // SAFETY: `base` is the kernel-owned ns16550, mapped in every address space.
+    // Configure a 1-byte RX FIFO trigger and clear the FIFOs before we read.
     unsafe { crate::uart::enable_rx_interrupt(base, shift) };
     let mut line = LineBuffer::new();
     crate::println!("shell: ready (type 'help')");
     prompt();
+    // Run the boot demonstration once the organism has diagnosed a crash, so
+    // `kb`/`diag` show real, populated data deterministically.
+    let mut demoed = false;
     loop {
-        // Block until a keystroke's IRQ wakes us (re-arms the PLIC source).
-        if !crate::sched::wait_irq_for(SHELL_IRQ_CAP) {
-            // No IRQ cap — should not happen; avoid a busy loop.
-            crate::sched::yield_now();
-            continue;
+        if !demoed && crate::heal::last_diagnosis().is_some() {
+            crate::println!();
+            self_demo();
+            prompt();
+            demoed = true;
         }
-        // Drain everything the UART has buffered.
         // SAFETY: kernel-owned ns16550 register window.
         while let Some(byte) = unsafe { crate::uart::get(base, shift) } {
             match line.push(byte) {
@@ -156,6 +184,8 @@ pub extern "C" fn shell_task() -> ! {
                 LineEvent::None => {}
             }
         }
+        // Nothing pending: let other tasks run, then poll again.
+        crate::sched::yield_now();
     }
 }
 
