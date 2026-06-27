@@ -418,6 +418,9 @@ pub fn exit_current(reason: ExitReason) -> ! {
             }
             ExitReason::Killed(cause) => {
                 crate::println!("sched: task '{}' killed by {cause:?}", s.tasks[current].as_ref().unwrap().name);
+                // Phase 12: set to the issue id when the diagnosed issue is
+                // escalated (chronic) — such a crash is quarantined, not restarted.
+                let mut quarantine_id: Option<&'static str> = None;
                 // Phase 5a: consult the deterministic knowledge organism and
                 // log the diagnosis.
                 match crate::heal::diagnose(cause) {
@@ -434,6 +437,13 @@ pub fn exit_current(reason: ExitReason) -> ! {
                                 issue.id()
                             );
                         }
+                        // Phase 12: a crash whose issue is now escalated is
+                        // chronic — we will quarantine the component, not restart
+                        // it. `escalated()` reflects the state `note_diagnosis`
+                        // just updated; the id is a `&'static` into the table.
+                        if issue.escalated() {
+                            quarantine_id = Some(issue.id());
+                        }
                     }
                     None => {
                         crate::println!("heal: no known issue for {cause:?} (recording for write-back)");
@@ -448,16 +458,21 @@ pub fn exit_current(reason: ExitReason) -> ! {
                 // rendezvous: deliver to a recv-blocked healer and wake it,
                 // then run it next.
                 if s.tasks[current].as_ref().unwrap().relaunch.is_some() {
-                    let badge = s.tasks[current].as_ref().unwrap().crash_badge;
                     let name = s.tasks[current].as_ref().unwrap().name;
-                    match find_blocked(s, CRASH_EP, IpcRole::Recv) {
-                        Some(h) => {
-                            s.tasks[h].as_mut().unwrap().message =
-                                Message { badge, data: [0; 3] };
-                            s.tasks[h].as_mut().unwrap().state = TaskState::Ready;
-                            prefer = Some(h);
+                    if let Some(id) = quarantine_id {
+                        // Phase 12: the issue is chronic — stop the futile fix.
+                        crate::println!("heal: '{name}' quarantined ({id} chronic) -- not restarting");
+                    } else {
+                        let badge = s.tasks[current].as_ref().unwrap().crash_badge;
+                        match find_blocked(s, CRASH_EP, IpcRole::Recv) {
+                            Some(h) => {
+                                s.tasks[h].as_mut().unwrap().message =
+                                    Message { badge, data: [0; 3] };
+                                s.tasks[h].as_mut().unwrap().state = TaskState::Ready;
+                                prefer = Some(h);
+                            }
+                            None => crate::println!("heal: no healer for '{name}' (left down)"),
                         }
-                        None => crate::println!("heal: no healer for '{name}' (left down)"),
                     }
                 }
             }
