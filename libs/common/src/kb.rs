@@ -17,6 +17,9 @@ pub struct KbRecord<'a> {
     /// How many times the organism has diagnosed this issue (a fixed-width
     /// on-disk counter; `0` if the entry declares none).
     pub seen: u32,
+    /// Whether the organism has escalated this issue as chronically recurring
+    /// (a fixed-width on-disk flag; `false` if absent).
+    pub escalated: bool,
 }
 
 /// Trim whitespace and strip a single pair of surrounding ASCII double quotes.
@@ -40,6 +43,7 @@ pub fn parse(bytes: &[u8]) -> Option<KbRecord<'_>> {
     let mut playbook = None;
     let mut match_cause = None;
     let mut seen = 0u32;
+    let mut escalated = false;
     let mut in_playbook = false;
     for line in lines {
         if line.trim() == "---" {
@@ -58,12 +62,13 @@ pub fn parse(bytes: &[u8]) -> Option<KbRecord<'_>> {
                 "title" => title = Some(clean(value)),
                 "match-cause" => match_cause = Some(clean(value)),
                 "seen" => seen = clean(value).parse().unwrap_or(0),
+                "escalated" => escalated = clean(value) == "1",
                 "playbook" => in_playbook = true,
                 _ => {}
             }
         }
     }
-    Some(KbRecord { id: id?, title: title?, playbook: playbook?, match_cause, seen })
+    Some(KbRecord { id: id?, title: title?, playbook: playbook?, match_cause, seen, escalated })
 }
 
 /// Emit a KB entry document that `parse` round-trips, into `out`. Returns the
@@ -88,6 +93,7 @@ pub fn serialize(id: &str, title: &str, playbook: &str, match_cause: &str, out: 
     put("title: \"")?; put(title)?; put("\"\n")?;
     put("match-cause: ")?; put(match_cause)?; put("\n")?;
     put("seen: 00000\n")?;
+    put("escalated: 0\n")?;
     put("playbook:\n")?;
     put("  - \"")?; put(playbook)?; put("\"\n")?;
     put("---\n")?;
@@ -99,25 +105,36 @@ pub fn serialize(id: &str, title: &str, playbook: &str, match_cause: &str, out: 
 /// entry, no rewrite, no allocator).
 pub const SEEN_WIDTH: usize = 5;
 
-/// Overwrite the fixed-width `seen: NNNNN` counter in `block` with `count`
-/// (zero-padded to `SEEN_WIDTH`). Returns `false` if the field is absent or its
-/// value is not exactly `SEEN_WIDTH` ASCII digits — the in-place guard. Pure.
-pub fn set_seen_in_block(block: &mut [u8], count: u32) -> bool {
-    const KEY: &[u8] = b"seen: ";
-    let Some(pos) = block.windows(KEY.len()).position(|w| w == KEY) else {
+/// Overwrite a fixed-width unsigned field `key` (`NNN…`) in `block` with `value`
+/// (zero-padded to `width`). Returns `false` if the field is absent or its value
+/// is not exactly `width` ASCII digits — the in-place guard. Pure. Fixed width
+/// is what makes the update a same-length overwrite (no shifting / rewrite).
+fn set_uint_field(block: &mut [u8], key: &[u8], value: u32, width: usize) -> bool {
+    let Some(pos) = block.windows(key.len()).position(|w| w == key) else {
         return false;
     };
-    let start = pos + KEY.len();
-    let end = start + SEEN_WIDTH;
+    let start = pos + key.len();
+    let end = start + width;
     if end > block.len() || !block[start..end].iter().all(|b| b.is_ascii_digit()) {
         return false;
     }
-    let mut n = count.min(99_999);
-    for i in (0..SEEN_WIDTH).rev() {
+    let max = 10u32.saturating_pow(width as u32).saturating_sub(1);
+    let mut n = value.min(max);
+    for i in (0..width).rev() {
         block[start + i] = b'0' + (n % 10) as u8;
         n /= 10;
     }
     true
+}
+
+/// Overwrite the fixed-width `seen: NNNNN` counter in `block` with `count`.
+pub fn set_seen_in_block(block: &mut [u8], count: u32) -> bool {
+    set_uint_field(block, b"seen: ", count, SEEN_WIDTH)
+}
+
+/// Overwrite the fixed-width `escalated: N` flag in `block` (`1` = escalated).
+pub fn set_escalated_in_block(block: &mut [u8], escalated: bool) -> bool {
+    set_uint_field(block, b"escalated: ", escalated as u32, 1)
 }
 
 #[cfg(test)]
@@ -213,6 +230,43 @@ verification: \"It works\"\n\
         let mut absent = [0u8; 32];
         absent[..16].copy_from_slice(b"---\nid: KB-0001\n");
         assert!(!set_seen_in_block(&mut absent, 3), "absent field rejected");
+    }
+
+    #[test]
+    fn parse_reads_escalated_default_false() {
+        let r = parse(SAMPLE.as_bytes()).expect("parses");
+        assert!(!r.escalated, "absent escalated defaults to false");
+        let with = SAMPLE.replace("match-cause: page-fault\n", "match-cause: page-fault\nescalated: 1\n");
+        assert!(parse(with.as_bytes()).unwrap().escalated);
+    }
+
+    #[test]
+    fn serialize_emits_a_parseable_escalated() {
+        let mut buf = [0u8; 512];
+        let n = serialize("KB-0006", "t", "Restart.", "illegal-instruction", &mut buf).unwrap();
+        assert!(!parse(&buf[..n]).unwrap().escalated);
+    }
+
+    #[test]
+    fn set_escalated_overwrites_in_place_and_round_trips() {
+        let doc = "---\nid: KB-0005\ntitle: \"t\"\nmatch-cause: page-fault\nseen: 00000\nescalated: 0\nplaybook:\n  - \"R.\"\n---\n";
+        let mut block = [0u8; 512];
+        block[..doc.len()].copy_from_slice(doc.as_bytes());
+        assert!(set_escalated_in_block(&mut block, true));
+        assert!(parse(&block).unwrap().escalated);
+        assert!(set_escalated_in_block(&mut block, false));
+        assert!(!parse(&block).unwrap().escalated);
+    }
+
+    #[test]
+    fn set_escalated_rejects_absent_or_malformed() {
+        let mut absent = [0u8; 32];
+        absent[..16].copy_from_slice(b"---\nid: KB-0001\n");
+        assert!(!set_escalated_in_block(&mut absent, true), "absent field rejected");
+        let mut bad = [0u8; 64];
+        let d = b"---\nescalated: x\n---\n";
+        bad[..d.len()].copy_from_slice(d);
+        assert!(!set_escalated_in_block(&mut bad, true), "non-digit field rejected");
     }
 
     #[test]
