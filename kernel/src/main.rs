@@ -1358,7 +1358,7 @@ mod bare {
                     };
                     if let Some(rec) = kb::parse(bytes) {
                         if rec.match_cause.is_some()
-                            && heal::install(rec.id, rec.title, rec.playbook, rec.match_cause, rec.seen, ent.start_block)
+                            && heal::install(rec.id, rec.title, rec.playbook, rec.match_cause, rec.seen, rec.escalated, ent.start_block)
                         {
                             loaded += 1;
                         }
@@ -1425,22 +1425,29 @@ mod bare {
                 if let Some(len) = kb::serialize(id, title, DEFAULT_PLAYBOOK, token, &mut doc) {
                     if let Some(start) = fs_append_file(id, &doc[..len]) {
                         // Install it now too, so a re-crash this boot matches.
-                        heal::install(id, title, DEFAULT_PLAYBOOK, Some(token), 0, start);
+                        heal::install(id, title, DEFAULT_PLAYBOOK, Some(token), 0, false, start);
                         println!("heal: recorded {id} ({token}) to disk");
                     } else {
                         println!("heal: could not record {id} ({token}) to disk");
                     }
                 }
             }
-            // Phase 10 — persist any entry whose seen-counter changed, in place.
-            while let Some((id, start_block, seen)) = heal::dirty_entry() {
+            // Phase 10/11 — persist any entry whose seen-counter (and possibly
+            // escalation) changed, in place.
+            while let Some((id, start_block, seen, escalated)) = heal::dirty_entry() {
                 let mut block = [0u8; kernel_common::fs::BLOCK_SIZE];
                 match fs_read_block(start_block) {
                     Some(b) => block.copy_from_slice(b),
                     None => continue,
                 }
-                if kb::set_seen_in_block(&mut block, seen) && fs_write_block(start_block, &block) {
-                    println!("heal: persisted {id} (seen {seen})");
+                // `&` (not `&&`): write both fixed-width fields regardless.
+                let ok = kb::set_seen_in_block(&mut block, seen)
+                    & kb::set_escalated_in_block(&mut block, escalated);
+                if ok && fs_write_block(start_block, &block) {
+                    println!(
+                        "heal: persisted {id} (seen {seen}{})",
+                        if escalated { ", escalated" } else { "" }
+                    );
                 }
             }
             sched::yield_now();
