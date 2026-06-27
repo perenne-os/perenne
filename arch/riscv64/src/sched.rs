@@ -421,10 +421,13 @@ pub fn exit_current(reason: ExitReason) -> ! {
                 // Phase 5a: consult the deterministic knowledge organism and
                 // log the diagnosis.
                 match crate::heal::diagnose(cause) {
-                    Some(issue) => crate::println!(
-                        "heal: diagnosed {} ({}) -> playbook: {}",
-                        issue.id(), issue.title(), issue.playbook()
-                    ),
+                    Some(issue) => {
+                        crate::println!(
+                            "heal: diagnosed {} ({}) -> playbook: {}",
+                            issue.id(), issue.title(), issue.playbook()
+                        );
+                        crate::heal::note_diagnosis(issue);
+                    }
                     None => {
                         crate::println!("heal: no known issue for {cause:?} (recording for write-back)");
                         // Phase 7: latch the cause for the KB-writer to record

@@ -92,6 +92,10 @@ impl KnownIssue {
 static mut KB_TABLE: [Option<KnownIssue>; MAX_ISSUES] = [None; MAX_ISSUES];
 static mut KB_COUNT: usize = 0;
 
+/// The most recent contained-crash diagnosis, for the shell's `diag` command.
+/// Set from the crash path (single hart).
+static mut LAST_DIAGNOSIS: Option<KnownIssue> = None;
+
 /// A single pending novel cause token, latched by the crash path
 /// (`note_unmatched`) and drained by the KB-writer task (`take_novel`). One
 /// slot is enough: a token is recorded at most once (once installed it matches,
@@ -120,6 +124,30 @@ pub fn install(id: &str, title: &str, playbook: &str, match_cause: Option<&str>)
 pub fn loaded_count() -> usize {
     // SAFETY: single hart; read of a boot-populated counter.
     unsafe { core::ptr::read(core::ptr::addr_of!(KB_COUNT)) }
+}
+
+/// The `i`-th installed KB entry's `(id, title)`, for the shell's `kb` command.
+pub fn entry(i: usize) -> Option<(&'static str, &'static str)> {
+    // SAFETY: single hart; the table is boot-populated then read-only.
+    let table = unsafe { &*core::ptr::addr_of!(KB_TABLE) };
+    table
+        .get(i)
+        .and_then(|slot| slot.as_ref())
+        .map(|issue| (issue.id(), issue.title()))
+}
+
+/// Record the most recent diagnosis (called from the crash path).
+pub fn note_diagnosis(issue: &KnownIssue) {
+    // SAFETY: single hart; crash path is not re-entrant.
+    unsafe { core::ptr::write(core::ptr::addr_of_mut!(LAST_DIAGNOSIS), Some(*issue)) };
+}
+
+/// The most recent diagnosis as `(id, playbook)`, for the shell's `diag`
+/// command. `None` until the organism has diagnosed a contained crash.
+pub fn last_diagnosis() -> Option<(&'static str, &'static str)> {
+    // SAFETY: single hart; read of a boot/crash-populated cell.
+    let last = unsafe { &*core::ptr::addr_of!(LAST_DIAGNOSIS) };
+    last.as_ref().map(|issue| (issue.id(), issue.playbook()))
 }
 
 /// Called from the crash path when `diagnose` found no match. If the kernel can
@@ -225,13 +253,17 @@ mod tests {
     }
 
     #[test]
-    fn max_kb_number_reads_the_largest_installed_id() {
-        // install() mutates process-global state; this test runs in isolation
-        // (no other test installs into or reads the global table).
+    fn installed_table_lists_entries_and_max_id() {
+        // install() mutates process-global state; this is the ONE test that
+        // touches the global table, so it runs without cross-test interference.
         assert_eq!(max_kb_number(), 0);
-        assert!(install("KB-0005", "t", "p", Some("page-fault")));
-        assert!(install("KB-0003", "t", "p", Some("x")));
+        assert!(entry(0).is_none(), "empty table");
+        assert!(install("KB-0005", "fatal fault", "p", Some("page-fault")));
+        assert!(install("KB-0003", "decoy", "p", Some("x")));
         assert_eq!(max_kb_number(), 5);
+        assert_eq!(entry(0), Some(("KB-0005", "fatal fault")));
+        assert_eq!(entry(1), Some(("KB-0003", "decoy")));
+        assert!(entry(2).is_none());
     }
 
     #[test]
