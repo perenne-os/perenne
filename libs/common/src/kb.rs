@@ -14,6 +14,9 @@ pub struct KbRecord<'a> {
     pub playbook: &'a str,
     /// The machine-matchable fault token, if the entry declares one.
     pub match_cause: Option<&'a str>,
+    /// How many times the organism has diagnosed this issue (a fixed-width
+    /// on-disk counter; `0` if the entry declares none).
+    pub seen: u32,
 }
 
 /// Trim whitespace and strip a single pair of surrounding ASCII double quotes.
@@ -36,6 +39,7 @@ pub fn parse(bytes: &[u8]) -> Option<KbRecord<'_>> {
     let mut title = None;
     let mut playbook = None;
     let mut match_cause = None;
+    let mut seen = 0u32;
     let mut in_playbook = false;
     for line in lines {
         if line.trim() == "---" {
@@ -53,12 +57,13 @@ pub fn parse(bytes: &[u8]) -> Option<KbRecord<'_>> {
                 "id" => id = Some(clean(value)),
                 "title" => title = Some(clean(value)),
                 "match-cause" => match_cause = Some(clean(value)),
+                "seen" => seen = clean(value).parse().unwrap_or(0),
                 "playbook" => in_playbook = true,
                 _ => {}
             }
         }
     }
-    Some(KbRecord { id: id?, title: title?, playbook: playbook?, match_cause })
+    Some(KbRecord { id: id?, title: title?, playbook: playbook?, match_cause, seen })
 }
 
 /// Emit a KB entry document that `parse` round-trips, into `out`. Returns the
@@ -82,10 +87,37 @@ pub fn serialize(id: &str, title: &str, playbook: &str, match_cause: &str, out: 
     put("id: ")?; put(id)?; put("\n")?;
     put("title: \"")?; put(title)?; put("\"\n")?;
     put("match-cause: ")?; put(match_cause)?; put("\n")?;
+    put("seen: 00000\n")?;
     put("playbook:\n")?;
     put("  - \"")?; put(playbook)?; put("\"\n")?;
     put("---\n")?;
     Some(n)
+}
+
+/// Width of the fixed `seen: NNNNN` counter field. Fixed width is what makes an
+/// in-place update a same-length byte overwrite (no shifting the rest of the
+/// entry, no rewrite, no allocator).
+pub const SEEN_WIDTH: usize = 5;
+
+/// Overwrite the fixed-width `seen: NNNNN` counter in `block` with `count`
+/// (zero-padded to `SEEN_WIDTH`). Returns `false` if the field is absent or its
+/// value is not exactly `SEEN_WIDTH` ASCII digits — the in-place guard. Pure.
+pub fn set_seen_in_block(block: &mut [u8], count: u32) -> bool {
+    const KEY: &[u8] = b"seen: ";
+    let Some(pos) = block.windows(KEY.len()).position(|w| w == KEY) else {
+        return false;
+    };
+    let start = pos + KEY.len();
+    let end = start + SEEN_WIDTH;
+    if end > block.len() || !block[start..end].iter().all(|b| b.is_ascii_digit()) {
+        return false;
+    }
+    let mut n = count.min(99_999);
+    for i in (0..SEEN_WIDTH).rev() {
+        block[start + i] = b'0' + (n % 10) as u8;
+        n /= 10;
+    }
+    true
 }
 
 #[cfg(test)]
@@ -144,6 +176,43 @@ verification: \"It works\"\n\
         assert_eq!(r.title, "Observed fault: illegal-instruction (auto-recorded)");
         assert_eq!(r.playbook, "Restart the component, up to a bounded number of retries.");
         assert_eq!(r.match_cause, Some("illegal-instruction"));
+    }
+
+    #[test]
+    fn parse_reads_seen_default_zero() {
+        let r = parse(SAMPLE.as_bytes()).expect("parses");
+        assert_eq!(r.seen, 0, "absent seen defaults to 0");
+        let with = SAMPLE.replace("match-cause: page-fault\n", "match-cause: page-fault\nseen: 00042\n");
+        assert_eq!(parse(with.as_bytes()).unwrap().seen, 42);
+    }
+
+    #[test]
+    fn serialize_emits_a_parseable_seen() {
+        let mut buf = [0u8; 512];
+        let n = serialize("KB-0006", "t", "Restart.", "illegal-instruction", &mut buf).unwrap();
+        assert_eq!(parse(&buf[..n]).unwrap().seen, 0);
+    }
+
+    #[test]
+    fn set_seen_overwrites_in_place_and_round_trips() {
+        let doc = "---\nid: KB-0005\ntitle: \"t\"\nmatch-cause: page-fault\nseen: 00000\nplaybook:\n  - \"Restart.\"\n---\n";
+        let mut block = [0u8; 512];
+        block[..doc.len()].copy_from_slice(doc.as_bytes());
+        assert!(set_seen_in_block(&mut block, 7));
+        assert_eq!(parse(&block).unwrap().seen, 7);
+        assert!(set_seen_in_block(&mut block, 1234));
+        assert_eq!(parse(&block).unwrap().seen, 1234);
+    }
+
+    #[test]
+    fn set_seen_rejects_absent_or_malformed_field() {
+        let mut no_field = [0u8; 64];
+        let d = b"---\nid: KB-0001\nseen: bad\n---\n";
+        no_field[..d.len()].copy_from_slice(d);
+        assert!(!set_seen_in_block(&mut no_field, 3), "non-digit field rejected");
+        let mut absent = [0u8; 32];
+        absent[..16].copy_from_slice(b"---\nid: KB-0001\n");
+        assert!(!set_seen_in_block(&mut absent, 3), "absent field rejected");
     }
 
     #[test]
