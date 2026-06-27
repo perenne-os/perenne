@@ -41,6 +41,17 @@ pub fn cap_lookup(caps: &[Option<Capability>], idx: usize) -> Option<EndpointId>
     }
 }
 
+/// Read the whole `Capability` at `idx` (the value the kernel copies when a
+/// component delegates it via `grant`). `None` for an empty slot or an
+/// out-of-range index — which is the unforgeability guard: a component can only
+/// delegate a capability it actually holds.
+pub fn cap_at(caps: &[Option<Capability>], idx: usize) -> Option<Capability> {
+    match caps.get(idx) {
+        Some(Some(cap)) => Some(*cap),
+        _ => None,
+    }
+}
+
 /// Look up capability `idx` in `caps`; if it is a restart capability, return
 /// its target scheduler slot. `None` if the index is out of range, the slot
 /// is empty, or the capability is the wrong type (e.g. an endpoint).
@@ -137,6 +148,20 @@ mod tests {
         assert_eq!(reply_caller(&caps, 2), None, "Randomness is not a Reply cap");
         assert_eq!(reply_caller(&caps, 0), None, "empty slot");
         assert_eq!(reply_caller(&caps, 9), None, "out of range");
+    }
+
+    #[test]
+    fn cap_at_reads_the_whole_capability() {
+        let caps = [None, Some(Capability::Endpoint(7)), Some(Capability::Randomness)];
+        assert_eq!(cap_at(&caps, 1), Some(Capability::Endpoint(7)));
+        assert_eq!(cap_at(&caps, 2), Some(Capability::Randomness));
+    }
+
+    #[test]
+    fn cap_at_rejects_empty_and_out_of_range() {
+        let caps = [None, Some(Capability::Endpoint(0))];
+        assert_eq!(cap_at(&caps, 0), None, "empty slot");
+        assert_eq!(cap_at(&caps, 9), None, "out of range");
     }
 
     #[test]
