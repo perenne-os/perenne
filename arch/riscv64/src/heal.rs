@@ -62,15 +62,26 @@ pub struct KnownIssue {
     title: Buf<TITLE_CAP>,
     playbook: Buf<PLAYBOOK_CAP>,
     match_cause: Buf<TOKEN_CAP>,
+    /// How many times this issue has been diagnosed (the on-disk "seen N times"
+    /// counter, loaded at boot and incremented in RAM on each diagnosis).
+    seen: u32,
+    /// The entry's first block on disk, so the KB-writer can rewrite its `seen`
+    /// field in place. `0` = not persistable (block 0 is the superblock).
+    start_block: u32,
+    /// The counter changed and needs persisting to disk.
+    dirty: bool,
 }
 
 impl KnownIssue {
-    fn new(id: &str, title: &str, playbook: &str, match_cause: &str) -> Self {
+    fn new(id: &str, title: &str, playbook: &str, match_cause: &str, seen: u32, start_block: u32) -> Self {
         KnownIssue {
             id: Buf::from_str(id),
             title: Buf::from_str(title),
             playbook: Buf::from_str(playbook),
             match_cause: Buf::from_str(match_cause),
+            seen,
+            start_block,
+            dirty: false,
         }
     }
     pub fn id(&self) -> &str {
@@ -81,6 +92,9 @@ impl KnownIssue {
     }
     pub fn playbook(&self) -> &str {
         self.playbook.as_str()
+    }
+    pub fn seen(&self) -> u32 {
+        self.seen
     }
     fn match_cause(&self) -> &str {
         self.match_cause.as_str()
@@ -104,15 +118,14 @@ static mut NOVEL_TOKEN: Option<&'static str> = None;
 
 /// Install a parsed KB record into the runtime table. Returns false if the
 /// table is full. Called only by the boot-time loader.
-pub fn install(id: &str, title: &str, playbook: &str, match_cause: Option<&str>) -> bool {
-    // SAFETY: single hart; called only from the boot KB loader before the
-    // gated patients run; no concurrent access.
+pub fn install(id: &str, title: &str, playbook: &str, match_cause: Option<&str>, seen: u32, start_block: u32) -> bool {
+    // SAFETY: single hart; called only from the boot KB loader / KB-writer.
     unsafe {
         let count = core::ptr::read(core::ptr::addr_of!(KB_COUNT));
         if count >= MAX_ISSUES {
             return false;
         }
-        let issue = KnownIssue::new(id, title, playbook, match_cause.unwrap_or(""));
+        let issue = KnownIssue::new(id, title, playbook, match_cause.unwrap_or(""), seen, start_block);
         let table = &mut *core::ptr::addr_of_mut!(KB_TABLE);
         table[count] = Some(issue);
         core::ptr::write(core::ptr::addr_of_mut!(KB_COUNT), count + 1);
@@ -127,19 +140,55 @@ pub fn loaded_count() -> usize {
 }
 
 /// The `i`-th installed KB entry's `(id, title)`, for the shell's `kb` command.
-pub fn entry(i: usize) -> Option<(&'static str, &'static str)> {
-    // SAFETY: single hart; the table is boot-populated then read-only.
+pub fn entry(i: usize) -> Option<(&'static str, &'static str, u32)> {
+    // SAFETY: single hart; the table is boot-populated then read-only here.
     let table = unsafe { &*core::ptr::addr_of!(KB_TABLE) };
     table
         .get(i)
         .and_then(|slot| slot.as_ref())
-        .map(|issue| (issue.id(), issue.title()))
+        .map(|issue| (issue.id(), issue.title(), issue.seen()))
 }
 
-/// Record the most recent diagnosis (called from the crash path).
+/// Record the most recent diagnosis, increment the matched entry's "seen N
+/// times" counter, and mark it dirty for the KB-writer to persist. Called from
+/// the crash path (interrupts off — no I/O here; the disk write is deferred).
 pub fn note_diagnosis(issue: &KnownIssue) {
-    // SAFETY: single hart; crash path is not re-entrant.
-    unsafe { core::ptr::write(core::ptr::addr_of_mut!(LAST_DIAGNOSIS), Some(*issue)) };
+    // Copy the record out first so we never hold a borrow into the table while
+    // we mutate it below (single hart; crash path is not re-entrant).
+    let copy = *issue;
+    // SAFETY: single hart, interrupts off in the crash path.
+    unsafe {
+        core::ptr::write(core::ptr::addr_of_mut!(LAST_DIAGNOSIS), Some(copy));
+        let id = copy.id();
+        let table = &mut *core::ptr::addr_of_mut!(KB_TABLE);
+        for slot in table.iter_mut().flatten() {
+            if slot.id() == id {
+                slot.seen = slot.seen.saturating_add(1);
+                slot.dirty = true;
+                break;
+            }
+        }
+    }
+}
+
+/// Return the on-disk `(id, start_block, seen)` of one entry whose counter
+/// changed and clear its dirty flag, so the KB-writer can persist it in place.
+/// `None` if none are dirty. Skips `start_block == 0` (the superblock — never an
+/// entry). Called only by the KB-writer task.
+pub fn dirty_entry() -> Option<(&'static str, u32, u32)> {
+    // SAFETY: single hart; the KB-writer is the only drainer.
+    unsafe {
+        let table = &mut *core::ptr::addr_of_mut!(KB_TABLE);
+        for slot in table.iter_mut().flatten() {
+            if slot.dirty {
+                slot.dirty = false;
+                if slot.start_block != 0 {
+                    return Some((slot.id(), slot.start_block, slot.seen));
+                }
+            }
+        }
+        None
+    }
 }
 
 /// The most recent diagnosis as `(id, playbook)`, for the shell's `diag`
@@ -229,12 +278,14 @@ mod tests {
 
     fn table() -> [Option<KnownIssue>; MAX_ISSUES] {
         let mut t: [Option<KnownIssue>; MAX_ISSUES] = Default::default();
-        t[0] = Some(KnownIssue::new("KB-0099", "decoy", "do nothing", ""));
+        t[0] = Some(KnownIssue::new("KB-0099", "decoy", "do nothing", "", 0, 0));
         t[1] = Some(KnownIssue::new(
             "KB-0005",
             "fatal fault",
             "Restart the component",
             "page-fault",
+            0,
+            0,
         ));
         t
     }
@@ -258,11 +309,11 @@ mod tests {
         // touches the global table, so it runs without cross-test interference.
         assert_eq!(max_kb_number(), 0);
         assert!(entry(0).is_none(), "empty table");
-        assert!(install("KB-0005", "fatal fault", "p", Some("page-fault")));
-        assert!(install("KB-0003", "decoy", "p", Some("x")));
+        assert!(install("KB-0005", "fatal fault", "p", Some("page-fault"), 0, 2));
+        assert!(install("KB-0003", "decoy", "p", Some("x"), 0, 6));
         assert_eq!(max_kb_number(), 5);
-        assert_eq!(entry(0), Some(("KB-0005", "fatal fault")));
-        assert_eq!(entry(1), Some(("KB-0003", "decoy")));
+        assert_eq!(entry(0), Some(("KB-0005", "fatal fault", 0)));
+        assert_eq!(entry(1), Some(("KB-0003", "decoy", 0)));
         assert!(entry(2).is_none());
     }
 
