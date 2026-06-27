@@ -219,6 +219,10 @@ pub fn dispatch(frame: &mut crate::trap::TrapFrame) -> Outcome {
             crate::sched::wait_irq(frame);
             Outcome::Resume
         }
+        Syscall::Grant => {
+            crate::sched::ipc_grant(frame);
+            Outcome::Resume
+        }
         Syscall::Unknown(_) => {
             frame.regs[9] = usize::MAX; // -1: unknown syscall
             Outcome::Resume

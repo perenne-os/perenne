@@ -177,6 +177,12 @@ pub struct Task {
     /// slot of the caller it must `reply` to (set on receiving a Call, cleared
     /// by `reply`). `None` otherwise. (Phase: call/reply IPC.)
     pub caller: Option<usize>,
+    /// A capability in transit through this task during a `grant` exchange:
+    /// while this task is a blocked sender it holds the cap it is delegating;
+    /// when this task is a receiver being woken it holds the delegated cap to
+    /// install into its recv reply-slot. Transient (single hart); `None`
+    /// otherwise. (Phase 8: capability delegation.)
+    pub pending_grant: Option<crate::cap::Capability>,
 }
 
 #[cfg(test)]

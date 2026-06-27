@@ -179,6 +179,7 @@ pub fn spawn(name: &'static str, entry: extern "C" fn() -> !, stack_top: usize) 
             restarts: 0,
             crash_badge: 0,
             caller: None,
+            pending_grant: None,
         });
         slot
     })
@@ -391,6 +392,7 @@ pub fn spawn_user(
             restarts: 0,
             crash_badge: 0,
             caller: None,
+            pending_grant: None,
         });
         slot
     })
@@ -577,11 +579,17 @@ pub fn ipc_recv(frame: &mut crate::trap::TrapFrame) {
         match waiting {
             Some((si, is_call)) => {
                 let msg = s.tasks[si].as_ref().unwrap().message;
+                // A grant sender carries the delegated cap; move it to us to
+                // install into our reply-slot below.
+                let granted = s.tasks[si].as_mut().unwrap().pending_grant.take();
                 if is_call {
                     s.tasks[si].as_mut().unwrap().state = TaskState::AwaitingReply;
                     mint_reply_cap(s, cur, si, reply_slot);
                 } else {
                     s.tasks[si].as_mut().unwrap().state = TaskState::Ready;
+                }
+                if let Some(cap) = granted {
+                    install_cap(s, cur, reply_slot, cap);
                 }
                 RecvStep::Got(msg)
             }
@@ -603,6 +611,11 @@ pub fn ipc_recv(frame: &mut crate::trap::TrapFrame) {
                 if let Some(caller) = s.tasks[cur].as_mut().unwrap().caller.take() {
                     mint_reply_cap(s, cur, caller, reply_slot);
                 }
+                // A grant set our pending_grant directly when it woke us; or, if
+                // we picked up a blocked grant sender, it was moved onto us.
+                if let Some(cap) = s.tasks[cur].as_mut().unwrap().pending_grant.take() {
+                    install_cap(s, cur, reply_slot, cap);
+                }
                 s.tasks[cur].as_ref().unwrap().message
             });
             write_message(frame, msg);
@@ -616,6 +629,78 @@ pub fn ipc_recv(frame: &mut crate::trap::TrapFrame) {
 fn mint_reply_cap(s: &mut Scheduler, server: usize, caller: usize, slot: usize) {
     if slot < CAP_SLOTS {
         s.tasks[server].as_mut().unwrap().caps[slot] = Some(crate::cap::Capability::Reply(caller));
+    }
+}
+
+/// Install `cap` into `task`'s cap table at `slot`; a no-op if `slot` is out of
+/// range (a receiver bug, not fatal). Generalizes the slot-bounded write
+/// `mint_reply_cap` performs.
+#[cfg(target_arch = "riscv64")]
+fn install_cap(s: &mut Scheduler, task: usize, slot: usize, cap: crate::cap::Capability) {
+    if slot < CAP_SLOTS {
+        s.tasks[task].as_mut().unwrap().caps[slot] = Some(cap);
+    }
+}
+
+/// Service a `grant` syscall: delegate (copy) the capability in the sender's
+/// `a1` cap slot to a peer recv-blocked on the endpoint named by `a0`, carrying
+/// the `a2` badge. The receiver installs the cap into the slot it named in its
+/// `recv` when it wakes. Copy semantics: the sender keeps its capability.
+/// `a0 = 0` on success, `usize::MAX` if the sender lacks the endpoint or the
+/// source slot is empty (the unforgeability guard — a component can only
+/// delegate what it holds).
+#[cfg(target_arch = "riscv64")]
+pub fn ipc_grant(frame: &mut crate::trap::TrapFrame) {
+    let ep_idx = frame.regs[9]; // a0
+    let src_slot = frame.regs[10]; // a1
+    let badge = frame.regs[11]; // a2
+    enum G {
+        BadCap,
+        Delivered,
+        Block(EndpointId),
+    }
+    let step = SCHED.with(|s| {
+        let cur = s.current;
+        let name = s.tasks[cur].as_ref().unwrap().name;
+        let ep = match cap_lookup(&s.tasks[cur].as_ref().unwrap().caps, ep_idx) {
+            Some(ep) => ep,
+            None => {
+                crate::println!("cap: '{name}' grant rejected (no endpoint capability)");
+                return G::BadCap;
+            }
+        };
+        let cap = match crate::cap::cap_at(&s.tasks[cur].as_ref().unwrap().caps, src_slot) {
+            Some(c) => c,
+            None => {
+                crate::println!("cap: '{name}' grant rejected (no capability in slot)");
+                return G::BadCap;
+            }
+        };
+        let msg = Message { badge, data: [0; 3] };
+        match find_blocked(s, ep, IpcRole::Recv) {
+            Some(ri) => {
+                let rname = s.tasks[ri].as_ref().unwrap().name;
+                crate::println!("cap: '{name}' delegated {cap:?} to '{rname}'");
+                s.tasks[ri].as_mut().unwrap().message = msg;
+                s.tasks[ri].as_mut().unwrap().pending_grant = Some(cap);
+                s.tasks[ri].as_mut().unwrap().state = TaskState::Ready;
+                G::Delivered
+            }
+            None => {
+                // No receiver yet: carry the cap on us until one arrives.
+                s.tasks[cur].as_mut().unwrap().message = msg;
+                s.tasks[cur].as_mut().unwrap().pending_grant = Some(cap);
+                G::Block(ep)
+            }
+        }
+    });
+    match step {
+        G::BadCap => frame.regs[9] = usize::MAX,
+        G::Delivered => frame.regs[9] = 0,
+        G::Block(ep) => {
+            block_current(ep, IpcRole::Send);
+            frame.regs[9] = 0;
+        }
     }
 }
 
@@ -996,6 +1081,7 @@ mod tests {
             restarts: 0,
             crash_badge: 0,
             caller: None,
+            pending_grant: None,
         }
     }
 
