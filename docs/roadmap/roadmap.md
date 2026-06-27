@@ -437,11 +437,31 @@ than the recent increments:
   threshold + latch; the KB-writer persists both fields together. Escalation
   changes the organism's reporting/knowledge, not the restart cage. QEMU-only.
 
-## Phase 12+ — Breadth
+## Phase 12 — Act on escalation: quarantine a chronic fault  *(done — 2026-06-27)*
 
-- **Goal:** the long tail — act on escalation (suppress futile restarts /
-  quarantine a chronically crashing component), growable/variable-length records
-  (a free-block allocator, multi-block directories), reliable live-keystroke
-  shell testing + a richer command set, more hardware (physical RISC-V board
-  boot 4c, ARM/phones), a fuller HAL, and more device drivers.
+- **Goal:** the organism *acts* on what it learned — when a crash diagnoses to an
+  escalated (chronic) issue, the kernel **quarantines** the component (stops the
+  futile restart) instead of restarting it. Recognize chronic (11) → stop the
+  futile fix (12).
+- **You learn:** that the action needs **no new persistence** — quarantine is the
+  behavioral consequence of Phase 11's persisted `escalated` flag, re-derived per
+  crash; and that the action (like the escalation driving it) **requires
+  cross-boot memory**, finally making the restart cage pay off across time (see
+  [learning note 0030](../learning/0030-quarantine-on-escalation.md)).
+- **Done when:** ✅ `./tools/test-qemu.ps1` shows `flaky` restarted-to-bound and
+  flagged on the first boot (KB-0005 not yet escalated), but on a second boot of
+  the same image — once KB-0005 escalates at `seen 6` —
+  `heal: 'flaky' quarantined (KB-0005 chronic) -- not restarting` with **no**
+  restart (the counter ends at 6, not 8). A single quarantine branch in
+  `exit_current`, gated on the escalated flag; Phase 5b restart behavior for
+  non-escalated issues is unchanged. Per-issue-class; per-component ledgers
+  deferred. QEMU-only.
+
+## Phase 13+ — Breadth
+
+- **Goal:** the long tail — per-component crash ledgers (precise per-component
+  quarantine + de-quarantine), growable/variable-length records (a free-block
+  allocator, multi-block directories), reliable live-keystroke shell testing + a
+  richer command set, more hardware (physical RISC-V board boot 4c, ARM/phones),
+  a fuller HAL, and more device drivers.
 - **Done when:** never, really — this is where it becomes a real, growing OS.
