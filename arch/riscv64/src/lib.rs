@@ -67,6 +67,10 @@ pub mod virtio;
 #[cfg(target_arch = "riscv64")]
 pub mod entropy;
 
+// The encrypted channel (Phase 14): ML-KEM session key + AEAD seal/open.
+#[cfg(target_arch = "riscv64")]
+pub mod channel;
+
 /// The PLIC interrupt controller: pure offset arithmetic (host-tested) + the
 /// gated claim/complete/enable driver for the kernel's external interrupts.
 pub mod plic;
