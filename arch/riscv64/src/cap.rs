@@ -29,6 +29,8 @@ pub enum Capability {
     /// One-shot authority to reply to the caller in this scheduler slot (minted
     /// by the kernel when a server receives a Call; consumed by `reply`).
     Reply(usize),
+    /// Authority to `seal`/`open` on the kernel's encrypted channel session.
+    Session,
 }
 
 /// Look up capability `idx` in `caps`; if it is an endpoint capability,
@@ -83,6 +85,13 @@ pub fn restart_target(caps: &[Option<Capability>], idx: usize) -> Option<usize> 
 /// out-of-range index, or the wrong capability type.
 pub fn has_randomness(caps: &[Option<Capability>], idx: usize) -> bool {
     matches!(caps.get(idx), Some(Some(Capability::Randomness)))
+}
+
+/// True iff capability `idx` is a `Session` capability (authority to use the
+/// encrypted channel's `seal`/`open`). `false` for an empty/out-of-range slot or
+/// the wrong type.
+pub fn has_session(caps: &[Option<Capability>], idx: usize) -> bool {
+    matches!(caps.get(idx), Some(Some(Capability::Session)))
 }
 
 /// Return the IRQ an `Interrupt` capability at `idx` authorizes waiting on.
@@ -146,6 +155,15 @@ mod tests {
         assert!(!has_randomness(&caps, 2), "an Endpoint cap is not Randomness");
         assert!(!has_randomness(&caps, 0), "empty slot");
         assert!(!has_randomness(&caps, 9), "out of range");
+    }
+
+    #[test]
+    fn has_session_checks_the_slot() {
+        let caps = [None, Some(Capability::Session), Some(Capability::Endpoint(0))];
+        assert!(has_session(&caps, 1));
+        assert!(!has_session(&caps, 2), "an Endpoint cap is not a Session cap");
+        assert!(!has_session(&caps, 0), "empty slot");
+        assert!(!has_session(&caps, 9), "out of range");
     }
 
     #[test]
