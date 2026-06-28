@@ -914,6 +914,18 @@ mod bare {
         core::arch::asm!("lbu {v}, 0({a})", v = out(reg) v, a = in(reg) addr, options(nostack));
         v
     }
+    #[inline(always)]
+    unsafe fn dma_r16(addr: usize) -> u16 {
+        let v;
+        core::arch::asm!("lhu {v}, 0({a})", v = out(reg) v, a = in(reg) addr, options(nostack));
+        v
+    }
+    #[inline(always)]
+    unsafe fn dma_r32(addr: usize) -> u32 {
+        let v;
+        core::arch::asm!("lw {v}, 0({a})", v = out(reg) v, a = in(reg) addr, options(nostack));
+        v
+    }
 
     /// The virtio-mmio v2 status handshake + queue-0 setup (identical for every
     /// modern virtio device). `dma` is the identity-mapped frame holding the
@@ -1579,6 +1591,114 @@ mod bare {
                 let status = blk_req(mmio, dma, write, avail_idx, block);
                 avail_idx = avail_idx.wrapping_add(1);
                 sys_reply(BLK_REPLY_SLOT, status as usize);
+            }
+        }
+    }
+
+    /// The user-space virtio-net driver (Phase 16, ADR 0007). It exclusively
+    /// owns the NIC — the MMIO + DMA frame are mapped RW-U into THIS component
+    /// only — and the kernel never touches the device. Raw mechanics only: the
+    /// modern two-queue bring-up (RX=0, TX=1), one pre-posted RX buffer, then a
+    /// call/reply loop: each call's badge is the TX frame length; it publishes
+    /// the TX descriptor, notifies, blocks on the device IRQ until the RX used
+    /// ring advances, and replies the received length (0 = none). The ARP frame
+    /// is built/parsed by the kernel `net_resolver` client in the shared DMA
+    /// page (a U-mode task can't call `kernel_common::net`). Only one exchange is
+    /// served (one RX buffer posted) — all this phase needs.
+    #[no_mangle]
+    #[link_section = ".user_text"]
+    extern "C" fn net_component() -> ! {
+        let mmio: usize;
+        let dma: usize;
+        // SAFETY: read the launch args the kernel placed in a1/a2.
+        unsafe {
+            core::arch::asm!("mv {m}, a1", "mv {d}, a2",
+                m = out(reg) mmio, d = out(reg) dma,
+                options(nomem, nostack, preserves_flags));
+        }
+        // SAFETY: mmio + dma are mapped RW-U into this task; the sequence is the
+        // spike-verified virtio-net bring-up, then a recv/transmit/wait/reply loop.
+        unsafe {
+            let rx_desc = dma + 0x000;
+            let rx_avail = dma + 0x080;
+            let rx_used = dma + 0x100;
+            let tx_desc = dma + 0x200;
+            let tx_avail = dma + 0x280;
+            let tx_used = dma + 0x300;
+            let rx_buf = dma + 0x400;
+            let tx_buf = dma + 0xC00;
+
+            // --- modern virtio-mmio bring-up, two queues (0=RX, 1=TX) ---
+            mmio_w(mmio, virtio::STATUS, 0);
+            mmio_w(mmio, virtio::STATUS, virtio::STATUS_ACK);
+            mmio_w(mmio, virtio::STATUS, virtio::STATUS_ACK | virtio::STATUS_DRIVER);
+            mmio_w(mmio, virtio::DEVICE_FEATURES_SEL, 1);
+            let fhi = mmio_r(mmio, virtio::DEVICE_FEATURES);
+            mmio_w(mmio, virtio::DRIVER_FEATURES_SEL, 1);
+            mmio_w(mmio, virtio::DRIVER_FEATURES, fhi & virtio::F_VERSION_1_HI);
+            mmio_w(mmio, virtio::DRIVER_FEATURES_SEL, 0);
+            mmio_w(mmio, virtio::DRIVER_FEATURES, 0);
+            mmio_w(mmio, virtio::STATUS,
+                virtio::STATUS_ACK | virtio::STATUS_DRIVER | virtio::STATUS_FEATURES_OK);
+            for (q, d, a, u) in [(0u32, rx_desc, rx_avail, rx_used), (1, tx_desc, tx_avail, tx_used)] {
+                mmio_w(mmio, virtio::QUEUE_SEL, q);
+                mmio_w(mmio, virtio::QUEUE_NUM, virtio::VQ_SIZE);
+                mmio_w(mmio, virtio::QUEUE_DESC_LOW, d as u32);
+                mmio_w(mmio, virtio::QUEUE_DESC_HIGH, (d >> 32) as u32);
+                mmio_w(mmio, virtio::QUEUE_DRIVER_LOW, a as u32);
+                mmio_w(mmio, virtio::QUEUE_DRIVER_HIGH, (a >> 32) as u32);
+                mmio_w(mmio, virtio::QUEUE_DEVICE_LOW, u as u32);
+                mmio_w(mmio, virtio::QUEUE_DEVICE_HIGH, (u >> 32) as u32);
+                mmio_w(mmio, virtio::QUEUE_READY, 1);
+            }
+            mmio_w(mmio, virtio::STATUS,
+                virtio::STATUS_ACK | virtio::STATUS_DRIVER | virtio::STATUS_FEATURES_OK | virtio::STATUS_DRIVER_OK);
+
+            // --- pre-post one RX buffer (device-writable) ---
+            dma_w64(rx_desc, rx_buf as u64);
+            dma_w32(rx_desc + 8, 2048);
+            dma_w16(rx_desc + 12, virtio::VIRTQ_DESC_F_WRITE);
+            dma_w16(rx_desc + 14, 0);
+            dma_w16(rx_avail + 4, 0); // ring[0] -> desc 0
+            dma_fence();
+            dma_w16(rx_avail + 2, 1); // avail.idx
+            dma_fence();
+
+            let mut tx_idx: u16 = 0;
+            loop {
+                // badge = total TX length (12-byte virtio_net_hdr + ARP frame),
+                // already written into tx_buf by the kernel resolver.
+                let tx_len = sys_recv(NET_EP_CAP, NET_REPLY_SLOT);
+
+                // publish the TX descriptor (device reads), notify queue 1.
+                dma_w64(tx_desc, tx_buf as u64);
+                dma_w32(tx_desc + 8, tx_len as u32);
+                dma_w16(tx_desc + 12, 0);
+                dma_w16(tx_desc + 14, 0);
+                dma_w16(tx_avail + 4 + (tx_idx as usize % virtio::VQ_SIZE as usize) * 2, 0);
+                dma_fence();
+                dma_w16(tx_avail + 2, tx_idx + 1);
+                dma_fence();
+                mmio_w(mmio, virtio::QUEUE_NOTIFY, 1);
+                tx_idx = tx_idx.wrapping_add(1);
+
+                // Block on the device IRQ until the RX used ring advances. A
+                // TX-completion IRQ may wake us first; ack and re-wait. Bounded so
+                // a genuine no-reply replies 0.
+                let mut rx_len: usize = 0;
+                for _ in 0..16 {
+                    sys_wait_irq(NET_IRQ_CAP);
+                    let is = mmio_r(mmio, virtio::INTERRUPT_STATUS);
+                    if is != 0 {
+                        mmio_w(mmio, virtio::INTERRUPT_ACK, is);
+                    }
+                    if dma_r16(rx_used + 2) != 0 {
+                        // used-ring element 0: id(u32 @ +4), len(u32 @ +8).
+                        rx_len = dma_r32(rx_used + 8) as usize;
+                        break;
+                    }
+                }
+                sys_reply(NET_REPLY_SLOT, rx_len);
             }
         }
     }
