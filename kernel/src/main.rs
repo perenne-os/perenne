@@ -58,8 +58,16 @@ mod bare {
         // SAFETY: the discovered virtio-mmio bases address real register pages.
         let rng_base = unsafe { virtio::find_device(&machine.virtio_mmio[..machine.virtio_mmio_count], virtio::DEVICE_ID_RNG) };
         let blk_base = unsafe { virtio::find_device(&machine.virtio_mmio[..machine.virtio_mmio_count], virtio::DEVICE_ID_BLK) };
+        let net_base = unsafe { virtio::find_device(&machine.virtio_mmio[..machine.virtio_mmio_count], virtio::DEVICE_ID_NET) };
 
         mem::init(machine.ram_base + machine.ram_size, machine.uart_base, machine.plic_base);
+        // Phase 15: bring up virtio-net and resolve the gateway (10.0.2.2) by
+        // ARP — the OS's first network exchange.
+        if let Some(net) = net_base {
+            unsafe { net_resolve_gateway(net) };
+        } else {
+            println!("net: no virtio-net device found");
+        }
         println!(
             "paging: sv39 on ({} of {} frames free)",
             mem::free_frames(),
@@ -920,6 +928,102 @@ mod bare {
         mmio_w(mmio, virtio::QUEUE_READY, 1);
         mmio_w(mmio, virtio::STATUS,
             virtio::STATUS_ACK | virtio::STATUS_DRIVER | virtio::STATUS_FEATURES_OK | virtio::STATUS_DRIVER_OK);
+    }
+
+    /// Phase 15 — the OS's first network exchange: bring up virtio-net (the
+    /// modern two-queue handshake), transmit an ARP request for the gateway
+    /// (`10.0.2.2`), and parse the reply (its MAC) from the RX queue. The frame
+    /// format is the host-tested `kernel_common::net` (ARP) logic. Polls the used
+    /// ring (the reply arrives within a few microseconds on QEMU SLIRP).
+    ///
+    /// This driver currently runs in the kernel (it uses the pure `arp` logic
+    /// directly); moving it to an unprivileged user-space component like the
+    /// rng/blk drivers (ADR 0007) is a deferred refinement.
+    unsafe fn net_resolve_gateway(mmio: usize) {
+        use kernel_common::net;
+        mem::map_device(mmio);
+        let dma = mem::frame::alloc_zeroed().expect("no DMA frame for net").0;
+        let rx_desc = dma + 0x000;
+        let rx_avail = dma + 0x080;
+        let rx_used = dma + 0x100;
+        let tx_desc = dma + 0x200;
+        let tx_avail = dma + 0x280;
+        let tx_used = dma + 0x300;
+        let _ = tx_used;
+        let rx_buf = dma + 0x400;
+        let tx_buf = dma + 0xC00;
+
+        // --- modern virtio-mmio bring-up, two queues (0=RX, 1=TX) ---
+        mmio_w(mmio, virtio::STATUS, 0);
+        mmio_w(mmio, virtio::STATUS, virtio::STATUS_ACK);
+        mmio_w(mmio, virtio::STATUS, virtio::STATUS_ACK | virtio::STATUS_DRIVER);
+        mmio_w(mmio, virtio::DEVICE_FEATURES_SEL, 1);
+        let fhi = mmio_r(mmio, virtio::DEVICE_FEATURES);
+        mmio_w(mmio, virtio::DRIVER_FEATURES_SEL, 1);
+        mmio_w(mmio, virtio::DRIVER_FEATURES, fhi & virtio::F_VERSION_1_HI);
+        mmio_w(mmio, virtio::DRIVER_FEATURES_SEL, 0);
+        mmio_w(mmio, virtio::DRIVER_FEATURES, 0);
+        mmio_w(mmio, virtio::STATUS, virtio::STATUS_ACK | virtio::STATUS_DRIVER | virtio::STATUS_FEATURES_OK);
+        for (q, d, a, u) in [(0u32, rx_desc, rx_avail, rx_used), (1, tx_desc, tx_avail, tx_used)] {
+            mmio_w(mmio, virtio::QUEUE_SEL, q);
+            mmio_w(mmio, virtio::QUEUE_NUM, virtio::VQ_SIZE);
+            mmio_w(mmio, virtio::QUEUE_DESC_LOW, d as u32);
+            mmio_w(mmio, virtio::QUEUE_DESC_HIGH, (d >> 32) as u32);
+            mmio_w(mmio, virtio::QUEUE_DRIVER_LOW, a as u32);
+            mmio_w(mmio, virtio::QUEUE_DRIVER_HIGH, (a >> 32) as u32);
+            mmio_w(mmio, virtio::QUEUE_DEVICE_LOW, u as u32);
+            mmio_w(mmio, virtio::QUEUE_DEVICE_HIGH, (u >> 32) as u32);
+            mmio_w(mmio, virtio::QUEUE_READY, 1);
+        }
+        mmio_w(mmio, virtio::STATUS, virtio::STATUS_ACK | virtio::STATUS_DRIVER | virtio::STATUS_FEATURES_OK | virtio::STATUS_DRIVER_OK);
+
+        // --- post one RX buffer (device-writable) ---
+        dma_w64(rx_desc, rx_buf as u64);
+        dma_w32(rx_desc + 8, 2048);
+        dma_w16(rx_desc + 12, virtio::VIRTQ_DESC_F_WRITE);
+        dma_w16(rx_desc + 14, 0);
+        dma_w16(rx_avail + 4, 0); // ring[0] -> desc 0
+        dma_fence();
+        dma_w16(rx_avail + 2, 1); // avail.idx
+        dma_fence();
+
+        // --- build the ARP request after a 12-byte (zeroed) virtio_net_hdr ---
+        let src_mac = [0x52u8, 0x54, 0x00, 0x12, 0x34, 0x56];
+        let txf = core::slice::from_raw_parts_mut((tx_buf + 12) as *mut u8, 64);
+        let len = net::build_request(&src_mac, [10, 0, 2, 15], [10, 0, 2, 2], txf);
+        dma_w64(tx_desc, tx_buf as u64);
+        dma_w32(tx_desc + 8, (12 + len) as u32);
+        dma_w16(tx_desc + 12, 0); // device reads
+        dma_w16(tx_desc + 14, 0);
+        dma_w16(tx_avail + 4, 0);
+        dma_fence();
+        dma_w16(tx_avail + 2, 1);
+        dma_fence();
+
+        // --- notify TX, poll RX used ring for the reply ---
+        mmio_w(mmio, virtio::QUEUE_NOTIFY, 1);
+        let mut got = false;
+        for _ in 0..5_000_000u64 {
+            let is = mmio_r(mmio, virtio::INTERRUPT_STATUS);
+            if is != 0 {
+                mmio_w(mmio, virtio::INTERRUPT_ACK, is);
+            }
+            let rx_idx = core::ptr::read_volatile((rx_used + 2) as *const u16);
+            if rx_idx != 0 {
+                let rxf = core::slice::from_raw_parts((rx_buf + 12) as *const u8, 64);
+                if let Some(mac) = net::parse_reply(rxf, [10, 0, 2, 2]) {
+                    println!(
+                        "net: resolved 10.0.2.2 -> {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                        mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
+                    );
+                    got = true;
+                    break;
+                }
+            }
+        }
+        if !got {
+            println!("net: spike got no ARP reply");
+        }
     }
 
     /// Issue one virtio-blk request for `sector` (`write` = T_OUT else T_IN),

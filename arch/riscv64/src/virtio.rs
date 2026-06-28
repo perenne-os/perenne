@@ -43,6 +43,7 @@ pub const F_VERSION_1_HI: u32 = 1;
 pub const VIRTQ_DESC_F_WRITE: u16 = 2;
 pub const VIRTQ_DESC_F_NEXT: u16 = 1;
 pub const DEVICE_ID_BLK: u32 = 2;
+pub const DEVICE_ID_NET: u32 = 1;
 pub const BLK_T_IN: u32 = 0; // read (device writes the data buffer)
 pub const BLK_T_OUT: u32 = 1; // write (device reads the data buffer)
 pub const BLK_SECTOR_SIZE: usize = 512;
