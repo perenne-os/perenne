@@ -117,6 +117,30 @@ mod bare {
             mem::build_user_space(tnu, NO_DEVICE));
         sched::grant_cap(tenant, LEASE_CAP, Capability::Endpoint(LEASE_EP));
 
+        // Phase 14 — encrypted IPC channel. The sealer seals a known message and
+        // sends the ciphertext to the opener, which verifies it (and that a
+        // tampered ciphertext is rejected). `nocap` proves the Session gate.
+        // Spawn the opener first so it recv-blocks before the sealer sends.
+        let opu = ustack(core::ptr::addr_of!(US_OPENER) as usize);
+        let opener = sched::spawn_user("opener", opener_task, opu.1,
+            core::ptr::addr_of!(KS_OPENER) as usize + TASK_STACK,
+            mem::build_user_space(opu, NO_DEVICE));
+        sched::grant_cap(opener, 0, Capability::Session);
+        sched::grant_cap(opener, CHAN_CAP, Capability::Endpoint(CHAN_EP));
+
+        let seu = ustack(core::ptr::addr_of!(US_SEALER) as usize);
+        let sealer = sched::spawn_user("sealer", sealer_task, seu.1,
+            core::ptr::addr_of!(KS_SEALER) as usize + TASK_STACK,
+            mem::build_user_space(seu, NO_DEVICE));
+        sched::grant_cap(sealer, 0, Capability::Session);
+        sched::grant_cap(sealer, CHAN_CAP, Capability::Endpoint(CHAN_EP));
+
+        let ncu = ustack(core::ptr::addr_of!(US_NOCAP) as usize);
+        let _nocap = sched::spawn_user("nocap", nocap_task, ncu.1,
+            core::ptr::addr_of!(KS_NOCAP) as usize + TASK_STACK,
+            mem::build_user_space(ncu, NO_DEVICE));
+        // nocap gets NO Session cap — its seal must be refused.
+
         // rogue gets NO endpoint capability — its send must be refused.
         let ru = ustack(core::ptr::addr_of!(US_ROGUE) as usize);
         let _rogue = sched::spawn_user("rogue", rogue_task, ru.1,
@@ -371,6 +395,18 @@ mod bare {
     /// use was rejected.
     const TENANT_REVOKED_CODE: usize = 13;
 
+    /// The encrypted-channel endpoint (Phase 14): sealer -> opener. The sealer
+    /// and opener hold a Session cap at slot 0 and Endpoint(CHAN_EP) at slot 1.
+    const CHAN_EP: usize = 8;
+    const CHAN_CAP: usize = 1; // Endpoint(CHAN_EP) (Session is slot 0)
+    const CHAN_REPLY_SLOT: usize = 2; // opener's recv reply slot (unused for Send)
+    /// The known 8-byte plaintext the sealer encrypts (a recognizable word).
+    const CHAN_PLAINTEXT: usize = 0x5345_4352_4554_3231;
+    /// opener's exit code when the message verified AND a tamper was rejected.
+    const CHAN_OK_CODE: usize = 14;
+    /// nocap's exit code when its seal was refused.
+    const NOCAP_CODE: usize = 15;
+
     /// The healer's cap-table slot holding its `Endpoint(CRASH_EP)` capability
     /// (it `recv`s on this to learn of crashes). Restart caps live at slots
     /// 1.. so a crash notification's badge is directly the cap slot to use.
@@ -434,6 +470,9 @@ mod bare {
     static mut KS_BROKER: KStack = [0; TASK_STACK];
     static mut KS_LEASE: KStack = [0; TASK_STACK];
     static mut KS_TENANT: KStack = [0; TASK_STACK];
+    static mut KS_OPENER: KStack = [0; TASK_STACK];
+    static mut KS_SEALER: KStack = [0; TASK_STACK];
+    static mut KS_NOCAP: KStack = [0; TASK_STACK];
     static mut KS_ROGUE: KStack = [0; TASK_STACK];
     static mut KS_HEALER: KStack = [0; TASK_STACK];
     static mut KS_TRANSIENT: KStack = [0; TASK_STACK];
@@ -472,6 +511,12 @@ mod bare {
     static mut US_LEASE: UStack = UStack([0; USER_STACK_SIZE]);
     #[link_section = ".user_data"]
     static mut US_TENANT: UStack = UStack([0; USER_STACK_SIZE]);
+    #[link_section = ".user_data"]
+    static mut US_OPENER: UStack = UStack([0; USER_STACK_SIZE]);
+    #[link_section = ".user_data"]
+    static mut US_SEALER: UStack = UStack([0; USER_STACK_SIZE]);
+    #[link_section = ".user_data"]
+    static mut US_NOCAP: UStack = UStack([0; USER_STACK_SIZE]);
     #[link_section = ".user_data"]
     static mut US_ROGUE: UStack = UStack([0; USER_STACK_SIZE]);
     #[link_section = ".user_data"]
@@ -719,6 +764,76 @@ mod bare {
         ret
     }
 
+    /// recv syscall capturing the 3 data words (a7 = 5): a0 = endpoint cap, a1 =
+    /// reply slot. Returns (badge, w0, w1, w2) — the message's badge + 3 data
+    /// words (the kernel delivers data into a1..a3).
+    ///
+    /// # Safety
+    /// Always sound; the kernel validates the capability and may block us.
+    #[inline(always)]
+    unsafe fn sys_recv4(cap: usize, reply_slot: usize) -> (usize, usize, usize, usize) {
+        let badge;
+        let w0;
+        let w1;
+        let w2;
+        core::arch::asm!(
+            "ecall",
+            in("a7") 5usize,
+            inout("a0") cap => badge,
+            inout("a1") reply_slot => w0,
+            out("a2") w1,
+            out("a3") w2,
+            options(nostack),
+        );
+        (badge, w0, w1, w2)
+    }
+
+    /// seal syscall (a7 = 13): a0 = plaintext word. Returns (status, ciphertext,
+    /// tag_lo, tag_hi, nonce); status `usize::MAX` if the caller lacks Session.
+    ///
+    /// # Safety
+    /// Always sound; the kernel validates the capability.
+    #[inline(always)]
+    unsafe fn sys_seal(plain: usize) -> (usize, usize, usize, usize, usize) {
+        let status;
+        let ct;
+        let tl;
+        let th;
+        let nonce;
+        core::arch::asm!(
+            "ecall",
+            in("a7") 13usize,
+            inout("a0") plain => status,
+            out("a1") ct,
+            out("a2") tl,
+            out("a3") th,
+            out("a4") nonce,
+            options(nostack),
+        );
+        (status, ct, tl, th, nonce)
+    }
+
+    /// open syscall (a7 = 14): a0 = ciphertext, a1 = tag_lo, a2 = tag_hi, a3 =
+    /// nonce. Returns (status, plaintext); status `usize::MAX` on a bad tag/no cap.
+    ///
+    /// # Safety
+    /// Always sound; the kernel validates the capability and the tag.
+    #[inline(always)]
+    unsafe fn sys_open(ct: usize, tag_lo: usize, tag_hi: usize, nonce: usize) -> (usize, usize) {
+        let status;
+        let plain;
+        core::arch::asm!(
+            "ecall",
+            in("a7") 14usize,
+            inout("a0") ct => status,
+            inout("a1") tag_lo => plain,
+            in("a2") tag_hi,
+            in("a3") nonce,
+            options(nostack),
+        );
+        (status, plain)
+    }
+
     /// MMIO register write (32-bit).
     /// # Safety: `base+off` must be a mapped device register.
     #[inline(always)]
@@ -952,6 +1067,58 @@ mod bare {
                 sys_exit(TENANT_REVOKED_CODE)
             } else {
                 sys_exit(99)
+            }
+        }
+    }
+
+    /// `sealer` (Phase 14): holds a Session cap (slot 0) + Endpoint(CHAN_EP). It
+    /// seals a known plaintext and sends {nonce, ciphertext, tag} to the opener.
+    #[no_mangle]
+    #[link_section = ".user_text"]
+    extern "C" fn sealer_task() -> ! {
+        // SAFETY: seal is Session-gated (we hold the cap); send4 carries the
+        // nonce as the badge and the ciphertext+tag as the 3 data words.
+        unsafe {
+            let (_s, ct, tl, th, nonce) = sys_seal(CHAN_PLAINTEXT);
+            let _ = sys_send4(CHAN_CAP, nonce, ct, tl, th);
+            sys_exit(0)
+        }
+    }
+
+    /// `opener` (Phase 14): holds a Session cap (slot 0) + Endpoint(CHAN_EP). It
+    /// receives the sealed message, opens it (verifying the plaintext), then
+    /// confirms a flipped ciphertext is rejected. Exits CHAN_OK_CODE iff both.
+    #[no_mangle]
+    #[link_section = ".user_text"]
+    extern "C" fn opener_task() -> ! {
+        // SAFETY: recv blocks for the sealer's message; open is Session-gated.
+        unsafe {
+            let (nonce, ct, tl, th) = sys_recv4(CHAN_CAP, CHAN_REPLY_SLOT);
+            let (s, plain) = sys_open(ct, tl, th, nonce);
+            let verified = s == 0 && plain == CHAN_PLAINTEXT;
+            let (s2, _) = sys_open(ct ^ 1, tl, th, nonce); // tampered ciphertext
+            let tamper_rejected = s2 == usize::MAX;
+            if verified && tamper_rejected {
+                sys_exit(CHAN_OK_CODE)
+            } else {
+                sys_exit(99)
+            }
+        }
+    }
+
+    /// `nocap` (Phase 14): holds NO Session cap — its seal is refused, proving
+    /// the capability gate on the encrypted channel.
+    #[no_mangle]
+    #[link_section = ".user_text"]
+    extern "C" fn nocap_task() -> ! {
+        // SAFETY: seal is always sound; here it returns usize::MAX because we
+        // hold no Session capability.
+        unsafe {
+            let (s, ..) = sys_seal(CHAN_PLAINTEXT);
+            if s == usize::MAX {
+                sys_exit(NOCAP_CODE)
+            } else {
+                sys_exit(98)
             }
         }
     }
