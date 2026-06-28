@@ -10,6 +10,33 @@ use ml_kem::MlKem768;
 use rand_chacha::ChaCha20Rng;
 use rand_core::{Rng, SeedableRng};
 
+use chacha20poly1305::aead::AeadInPlace;
+use chacha20poly1305::{ChaCha20Poly1305, KeyInit};
+
+/// Seal `buf` in place with ChaCha20-Poly1305 under `key`/`nonce`, returning the
+/// 16-byte authentication tag. No associated data. No allocation (in-place,
+/// detached tag).
+pub fn seal(key: &[u8; 32], nonce: &[u8; 12], buf: &mut [u8]) -> [u8; 16] {
+    let cipher = ChaCha20Poly1305::new(key.into());
+    let tag = cipher
+        .encrypt_in_place_detached(nonce.into(), &[], buf)
+        .expect("in-place seal never fails for a slice");
+    let mut t = [0u8; 16];
+    t.copy_from_slice(&tag);
+    t
+}
+
+/// Open `buf` in place with ChaCha20-Poly1305 under `key`/`nonce`/`tag`.
+/// Returns `true` iff the tag verifies (and `buf` now holds the plaintext);
+/// `false` on a bad tag (tamper or wrong key), leaving `buf` unchanged-or-garbage
+/// (the caller must not use it).
+pub fn open(key: &[u8; 32], nonce: &[u8; 12], buf: &mut [u8], tag: &[u8; 16]) -> bool {
+    let cipher = ChaCha20Poly1305::new(key.into());
+    cipher
+        .decrypt_in_place_detached(nonce.into(), &[], buf, tag.into())
+        .is_ok()
+}
+
 /// Run an ML-KEM-768 round-trip seeded by `seed`: generate a keypair,
 /// encapsulate a shared secret to the public key, then decapsulate the
 /// ciphertext with the private key. Returns `Some(secret)` iff the
@@ -107,6 +134,35 @@ mod tests {
         let a = ml_kem768_agree([1u8; 32]).unwrap();
         let b = ml_kem768_agree([2u8; 32]).unwrap();
         assert_ne!(a, b, "distinct seeds must produce distinct shared secrets");
+    }
+
+    #[test]
+    fn seal_open_round_trips() {
+        let key = [7u8; 32];
+        let nonce = [3u8; 12];
+        let mut buf = *b"hi there";
+        let tag = seal(&key, &nonce, &mut buf);
+        assert_ne!(&buf, b"hi there", "ciphertext differs from plaintext");
+        assert!(open(&key, &nonce, &mut buf, &tag));
+        assert_eq!(&buf, b"hi there", "plaintext recovered");
+    }
+
+    #[test]
+    fn open_rejects_a_tampered_ciphertext() {
+        let key = [7u8; 32];
+        let nonce = [3u8; 12];
+        let mut buf = *b"hi there";
+        let tag = seal(&key, &nonce, &mut buf);
+        buf[0] ^= 1;
+        assert!(!open(&key, &nonce, &mut buf, &tag), "a flipped byte fails the tag");
+    }
+
+    #[test]
+    fn open_rejects_a_wrong_key() {
+        let nonce = [3u8; 12];
+        let mut buf = *b"hi there";
+        let tag = seal(&[7u8; 32], &nonce, &mut buf);
+        assert!(!open(&[8u8; 32], &nonce, &mut buf, &tag), "wrong key fails the tag");
     }
 
     #[test]
