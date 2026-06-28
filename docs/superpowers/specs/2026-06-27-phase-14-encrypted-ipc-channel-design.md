@@ -15,6 +15,20 @@ seals a message under the session key; the kernel relays the ciphertext; the
 other opens it (the AEAD tag verifying integrity). A tampered ciphertext or a
 caller lacking authority fails.
 
+## Implementation revision (2026-06-28, during build)
+
+Two design details changed when they met reality; the shipped code + learning
+note 0032 are authoritative. (1) **The session key is established once at boot in
+`kmain` (on the 512 KiB boot stack), not lazily in the `seal`/`open` syscall
+path** — ML-KEM keygen is far too stack-hungry to run on a task's 16 KiB trap
+stack (it overflowed and corrupted the return address into a fatal jump). The
+syscalls then only run the light AEAD. (2) Consequently the key is derived from a
+**fixed seed** at boot rather than the entropy pool (the pool isn't seeded until
+the entropy component runs, post-boot); **pool-seeding the channel key is
+deferred** (it needs a large-stack establishment after the pool is ready). The
+demo plaintext is also kept ≤ 32 bits so U-mode materializes it inline rather
+than via a `.rodata` constant-pool load (the recurring U-mode codegen rule).
+
 ## Honest threat model (read this first)
 
 The crypto runs in the **kernel** — U-mode components cannot run it (the

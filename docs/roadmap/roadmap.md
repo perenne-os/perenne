@@ -476,12 +476,32 @@ than the recent increments:
   `revoke` syscall (a7 = 12) authorized by holding the cap. Per-endpoint
   transitive sweep; epoch/CDT revocation deferred. QEMU-only.
 
-## Phase 14+ — Breadth
+## Phase 14 — Encrypted IPC channel  *(done — 2026-06-28)*
 
-- **Goal:** the long tail — epoch/generation revocation (O(1), re-grantable) + a
-  capability derivation tree, per-component crash ledgers (precise per-component
-  quarantine + de-quarantine), growable/variable-length records (a free-block
-  allocator, multi-block directories), reliable live-keystroke shell testing + a
-  richer command set, more hardware (physical RISC-V board boot 4c, ARM/phones),
-  a fuller HAL, and more device drivers.
+- **Goal:** put the post-quantum secret to work — the ML-KEM shared secret (built
+  in 3c, unused until now) keys a ChaCha20-Poly1305 AEAD session, and two
+  components exchange an authenticated-encrypted message over IPC.
+- **You learn:** that AEAD gives confidentiality **and** integrity (a tampered
+  ciphertext fails the tag); that crypto is capability-gated (a `Session` cap,
+  like `Randomness` gates `getrandom`); the honest threat model (a kernel session
+  service — the kernel sees plaintext; E2E-from-the-kernel needs U-mode crypto);
+  and two bare-metal gotchas — ML-KEM keygen needs a big stack (establish at boot,
+  not in the syscall path) and a 64-bit U-mode constant faults from a `.rodata`
+  load (see [learning note 0032](../learning/0032-encrypted-ipc-channel.md)).
+- **Done when:** ✅ `./tools/test-qemu.ps1` shows `crypto: channel session
+  established (ML-KEM)`, the `opener` decrypt + verify + tamper-reject
+  (`sched: task 'opener' exited (code 14)`), and the no-capability refusal
+  (`crypto: 'nocap' seal refused …`, `exited (code 15)`). Audited
+  `chacha20poly1305` (`no_std`); pure host-tested `seal`/`open`; a `channel`
+  module + `Session`-gated `seal`/`open` syscalls. Kernel session service;
+  fixed-seed at boot; U-mode/E2E crypto deferred. QEMU-only.
+
+## Phase 15+ — Breadth
+
+- **Goal:** the long tail — U-mode (end-to-end) crypto + pool-seeded/two-party
+  ML-KEM + applying the channel to disk/network; epoch/generation revocation +
+  a capability derivation tree; per-component crash ledgers; growable records (a
+  free-block allocator, multi-block directories); reliable live-keystroke shell
+  testing + a richer command set; more hardware (physical RISC-V board boot 4c,
+  ARM/phones), a fuller HAL, and more device drivers.
 - **Done when:** never, really — this is where it becomes a real, growing OS.
