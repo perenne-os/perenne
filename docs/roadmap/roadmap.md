@@ -496,12 +496,29 @@ than the recent increments:
   module + `Session`-gated `seal`/`open` syscalls. Kernel session service;
   fixed-seed at boot; U-mode/E2E crypto deferred. QEMU-only.
 
-## Phase 15+ — Breadth
+## Phase 15 — virtio-net + ARP: the OS's first network exchange  *(done — 2026-06-28)*
 
-- **Goal:** the long tail — U-mode (end-to-end) crypto + pool-seeded/two-party
-  ML-KEM + applying the channel to disk/network; epoch/generation revocation +
-  a capability derivation tree; per-component crash ledgers; growable records (a
-  free-block allocator, multi-block directories); reliable live-keystroke shell
-  testing + a richer command set; more hardware (physical RISC-V board boot 4c,
-  ARM/phones), a fuller HAL, and more device drivers.
+- **Goal:** open **networking** — a `virtio-net` driver brings up the NIC and does
+  the OS's first network exchange: ARP-resolve the gateway (`10.0.2.2`),
+  transmitting a request and parsing the reply (its MAC).
+- **You learn:** the two-queue virtio device (RX/TX, a pre-posted receive
+  buffer + the `virtio_net_hdr`); that ARP is the smallest self-contained network
+  proof (QEMU SLIRP answers it, no IP/TCP stack needed); and a spike-validated
+  device bring-up that reused the host-tested `arp` wire format (see
+  [learning note 0033](../learning/0033-virtio-net-arp.md)).
+- **Done when:** ✅ `./tools/test-qemu.ps1` (with `-netdev user -device
+  virtio-net-device`) shows `net: resolved 10.0.2.2 -> 52:55:0a:00:02:02`. Pure
+  host-tested `kernel_common::net` (ARP build/parse); a virtio-net two-queue
+  bring-up; `mem::map_device`. The driver runs **in the kernel** for now — moving
+  it to a user-space component (ADR 0007), like rng/blk, is a deferred refinement.
+  QEMU-only.
+
+## Phase 16+ — Breadth
+
+- **Goal:** the long tail — move the NIC driver to a user-space component; a
+  minimal IP/UDP stack (DHCP, ping) + encrypting traffic with the Phase 14
+  channel; U-mode (end-to-end) crypto; epoch/generation revocation + a capability
+  derivation tree; per-component crash ledgers; growable records (a free-block
+  allocator, multi-block directories); more hardware (physical RISC-V board boot
+  4c, ARM/phones), a fuller HAL, and more device drivers.
 - **Done when:** never, really — this is where it becomes a real, growing OS.

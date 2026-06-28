@@ -42,3 +42,4 @@ This folder holds the author's learning notes as systems-programming concepts cl
 - [0030 — Act on escalation: quarantine a chronic fault (Phase 12)](0030-quarantine-on-escalation.md)
 - [0031 — Capability revocation: take back delegated authority (Phase 13)](0031-capability-revocation.md)
 - [0032 — Encrypted IPC channel: putting the post-quantum secret to work (Phase 14)](0032-encrypted-ipc-channel.md)
+- [0033 — virtio-net + ARP: the OS's first network exchange (Phase 15)](0033-virtio-net-arp.md)

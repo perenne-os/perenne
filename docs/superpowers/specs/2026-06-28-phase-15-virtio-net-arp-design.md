@@ -5,6 +5,18 @@
 **networking**, the project's biggest absent capability. A third user-space
 device driver (ADR 0007).
 
+## Implementation revision (2026-06-28, during build)
+
+The spike (a kernel-side virtio-net bring-up + ARP) **passed first try** —
+QEMU/SLIRP reliably replies to ARP and the two-queue bring-up works
+(`net: resolved 10.0.2.2 -> 52:55:0a:00:02:02`, SLIRP's gateway MAC). Given the
+spike already uses the host-tested `arp` logic directly (DRY) and works, the
+shipped driver **runs in the kernel** (a boot-time `net_resolve_gateway`) rather
+than as a U-mode component. Moving it to an unprivileged user-space component
+like the rng/blk drivers (ADR 0007) is a **deferred refinement** — the same kind
+of pragmatic, documented pivot as Phase 9's polling shell. The full ARP exchange
+(TX **and** RX) shipped, not the TX-only fallback.
+
 ## The gap
 
 The OS drives `virtio-rng` and `virtio-blk` as unprivileged components, but has
