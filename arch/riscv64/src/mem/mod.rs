@@ -54,9 +54,6 @@ impl<T> SingleHartCell<T> {
 /// kernel into their own trees (see [`build_user_space`]).
 #[cfg(target_arch = "riscv64")]
 static KERNEL_SATP: AtomicUsize = AtomicUsize::new(0);
-/// Physical address of the master (kernel) page-table root, recorded at `init`
-/// so `map_device` can add device mappings after the MMU is on.
-static KERNEL_ROOT: AtomicUsize = AtomicUsize::new(0);
 
 /// MMIO base of the console UART (from the device tree), saved by [`init`]
 /// so [`map_kernel_sections`] can map its page into the master table and
@@ -183,7 +180,6 @@ pub fn init(ram_end: usize, uart_base: usize, plic_base: usize) {
         paging::map_range(root, free_ram.0, free_ram.1, PTE_R | PTE_W | PTE_G);
 
         // SAFETY: everything the kernel touches is now identity-mapped.
-        KERNEL_ROOT.store(root as usize, Ordering::Release);
         let satp = paging::make_satp(root as usize);
         KERNEL_SATP.store(satp, Ordering::Release);
         crate::csr::satp_write(satp);
@@ -195,21 +191,6 @@ pub fn init(ram_end: usize, uart_base: usize, plic_base: usize) {
 #[cfg(target_arch = "riscv64")]
 pub fn kernel_satp() -> usize {
     KERNEL_SATP.load(Ordering::Acquire)
-}
-
-/// Identity-map one device MMIO page (`base`, 4 KiB) into the master kernel
-/// table, R-W global, so a kernel task can touch the device's registers. Used
-/// by the kernel-side virtio-net spike. Idempotent enough for a single call per
-/// device at boot.
-#[cfg(target_arch = "riscv64")]
-pub fn map_device(base: usize) {
-    use paging::{PTE_G, PTE_R, PTE_W};
-    let root = KERNEL_ROOT.load(Ordering::Acquire) as *mut paging::PageTable;
-    // SAFETY: `root` is the live master table; `base` is a device MMIO page.
-    unsafe {
-        paging::map_range(root, base, base + paging::PAGE_SIZE, PTE_R | PTE_W | PTE_G);
-        core::arch::asm!("sfence.vma");
-    }
 }
 
 /// Build a private address space for one U-mode task and return its `satp`.
