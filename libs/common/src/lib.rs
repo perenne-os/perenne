@@ -14,6 +14,7 @@ pub const PROJECT_NAME: &str = "Kernel (working title)";
 
 pub mod fs;
 pub mod kb;
+pub mod net;
 
 #[cfg(test)]
 mod tests {
