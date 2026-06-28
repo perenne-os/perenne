@@ -18,7 +18,7 @@ mod bare {
     use core::panic::PanicInfo;
 
     use kernel::GREETING;
-    use kernel_arch_riscv64::{cap::Capability, console, csr, dt, entropy, heal, mem, plic, println, sched, shell, task::Message, timer, trap, virtio};
+    use kernel_arch_riscv64::{cap::Capability, channel, console, csr, dt, entropy, heal, mem, plic, println, sched, shell, task::Message, timer, trap, virtio};
     use kernel_common::PROJECT_NAME;
 
     /// Rust entry, called from the boot assembly with the arguments
@@ -117,10 +117,16 @@ mod bare {
             mem::build_user_space(tnu, NO_DEVICE));
         sched::grant_cap(tenant, LEASE_CAP, Capability::Endpoint(LEASE_EP));
 
-        // Phase 14 — encrypted IPC channel. The sealer seals a known message and
-        // sends the ciphertext to the opener, which verifies it (and that a
-        // tampered ciphertext is rejected). `nocap` proves the Session gate.
-        // Spawn the opener first so it recv-blocks before the sealer sends.
+        // Phase 14 — encrypted IPC channel. Establish the session key here on the
+        // large boot stack: ML-KEM keygen is too stack-hungry to run lazily in
+        // the seal/open syscall (which executes on a task's 16 KiB trap stack).
+        // (Fixed seed for now; pool-seeding the channel key is deferred — it
+        // needs a large-stack establishment after the pool is seeded.)
+        channel::establish([0x14u8; 32]);
+        // The sealer seals a known message and sends the ciphertext to the
+        // opener, which verifies it (and that a tampered ciphertext is rejected);
+        // `nocap` proves the Session gate. Spawn the opener first so it
+        // recv-blocks before the sealer sends.
         let opu = ustack(core::ptr::addr_of!(US_OPENER) as usize);
         let opener = sched::spawn_user("opener", opener_task, opu.1,
             core::ptr::addr_of!(KS_OPENER) as usize + TASK_STACK,
@@ -400,8 +406,10 @@ mod bare {
     const CHAN_EP: usize = 8;
     const CHAN_CAP: usize = 1; // Endpoint(CHAN_EP) (Session is slot 0)
     const CHAN_REPLY_SLOT: usize = 2; // opener's recv reply slot (unused for Send)
-    /// The known 8-byte plaintext the sealer encrypts (a recognizable word).
-    const CHAN_PLAINTEXT: usize = 0x5345_4352_4554_3231;
+    /// The known plaintext the sealer encrypts (a recognizable word). Kept ≤ 32
+    /// bits so U-mode code materializes it inline (`lui`+`addi`) rather than via a
+    /// `ld` from the kernel's `.rodata` constant pool (unmapped in U-mode).
+    const CHAN_PLAINTEXT: usize = 0x1234_5678;
     /// opener's exit code when the message verified AND a tamper was rejected.
     const CHAN_OK_CODE: usize = 14;
     /// nocap's exit code when its seal was refused.
