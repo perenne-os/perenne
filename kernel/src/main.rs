@@ -456,6 +456,15 @@ mod bare {
     /// bit is free.
     const BLK_WRITE_FLAG: usize = 1 << 31;
 
+    /// The net service endpoint (the kernel `net_resolver` calls it; the U-mode
+    /// `net` driver recvs). Mirrors the blk cap layout exactly.
+    const NET_EP: usize = 9;
+    /// net cap slots: 0 = the service endpoint, 1 = its Interrupt cap, 2 = the
+    /// one-shot Reply cap the driver's recv mints per call.
+    const NET_EP_CAP: usize = 0;
+    const NET_IRQ_CAP: usize = 1;
+    const NET_REPLY_SLOT: usize = 2;
+
     /// Phase 6c — the KB-ready gate. Patients block on this endpoint on their
     /// first run so they cannot crash before the loader builds the on-disk KB
     /// table; the loader releases them once it has.
@@ -470,6 +479,10 @@ mod bare {
     /// Physical address of the blk DMA frame (identity-mapped); the FS reads
     /// sector bytes from `BLK_DMA_PA + BLK_DATA_OFF`. Set by `kmain`.
     static mut BLK_DMA_PA: usize = 0;
+    /// Physical address of the net DMA frame (identity-mapped); the resolver
+    /// builds the ARP request into `NET_DMA_PA + 0xC00 + 12` and reads the reply
+    /// from `NET_DMA_PA + 0x400 + 12`. Set by `kmain`.
+    static mut NET_DMA_PA: usize = 0;
     /// The block currently resident in the DMA data page (the one-block cache);
     /// `-1` = none. Re-reading the same block skips the IPC round-trip.
     static mut FS_CACHED_BLOCK: i64 = -1;
@@ -499,6 +512,8 @@ mod bare {
     static mut KS_DCLIENTA: KStack = [0; TASK_STACK];
     static mut KS_DCLIENTB: KStack = [0; TASK_STACK];
     static mut KS_BLK: KStack = [0; TASK_STACK];
+    static mut KS_NET: KStack = [0; TASK_STACK];
+    static mut KS_NETRES: KStack = [0; TASK_STACK];
     static mut KS_FS: KStack = [0; TASK_STACK];
     static mut KS_KBW: KStack = [0; TASK_STACK];
     static mut KS_NOVEL: KStack = [0; TASK_STACK];
@@ -553,6 +568,8 @@ mod bare {
     static mut US_DCLIENTB: UStack = UStack([0; USER_STACK_SIZE]);
     #[link_section = ".user_data"]
     static mut US_BLK: UStack = UStack([0; USER_STACK_SIZE]);
+    #[link_section = ".user_data"]
+    static mut US_NET: UStack = UStack([0; USER_STACK_SIZE]);
     #[link_section = ".user_data"]
     static mut US_NOVEL: UStack = UStack([0; USER_STACK_SIZE]);
 
