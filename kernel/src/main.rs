@@ -1703,6 +1703,50 @@ mod bare {
         }
     }
 
+    /// The kernel client for the user-space `net` driver (Phase 16). It builds
+    /// the ARP request into the shared identity-mapped DMA page (host-tested
+    /// `kernel_common::net`), `call`s the driver to transmit + receive, then
+    /// parses the reply and reports the gateway MAC. The ARP logic stays
+    /// kernel-side and pure — exactly as `fs` stayed kernel-side over `blk`.
+    extern "C" fn net_resolver() -> ! {
+        use kernel_common::net;
+        // SAFETY: NET_DMA_PA is the kernel-allocated, identity-mapped DMA frame;
+        // single hart owns it. The driver shares the same physical frame RW-U.
+        unsafe {
+            let dma = NET_DMA_PA;
+            let tx_frame = dma + 0xC00 + 12; // after the 12-byte virtio_net_hdr
+            let rx_frame = dma + 0x400 + 12;
+            let src_mac = [0x52u8, 0x54, 0x00, 0x12, 0x34, 0x56];
+            let txf = core::slice::from_raw_parts_mut(tx_frame as *mut u8, net::ARP_FRAME_LEN);
+            let arp_len = net::build_request(&src_mac, [10, 0, 2, 15], [10, 0, 2, 2], txf);
+
+            // Call the driver: badge = total TX length (header + ARP). Blocks
+            // until the driver replies the received length (0 = no reply).
+            let rx_len = sched::call_message(NET_EP_CAP, 12 + arp_len);
+
+            let mut resolved = false;
+            if rx_len != 0 {
+                let rxf = core::slice::from_raw_parts(rx_frame as *const u8, net::ARP_FRAME_LEN);
+                if let Some(mac) = net::parse_reply(rxf, [10, 0, 2, 2]) {
+                    println!(
+                        "net: resolved 10.0.2.2 -> {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                        mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
+                    );
+                    resolved = true;
+                }
+            }
+            if !resolved {
+                println!("net: no ARP reply");
+            }
+        }
+        // Done: idle like the other one-shot kernel tasks.
+        loop {
+            sched::yield_now();
+            // SAFETY: wait for the next interrupt between yields.
+            unsafe { core::arch::asm!("wfi") };
+        }
+    }
+
     /// The FS↔device boundary: read block `n` via the blk server into the
     /// identity-mapped DMA data page and return a view of it. `None` on a device
     /// I/O error. A trivial one-block cache skips the IPC if `n` is resident.
