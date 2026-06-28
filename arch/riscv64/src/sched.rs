@@ -1052,6 +1052,59 @@ pub fn restart(frame: &mut crate::trap::TrapFrame) {
     frame.regs[9] = if ok { 0 } else { usize::MAX };
 }
 
+/// The `seal` syscall (Phase 14): AEAD-encrypt the plaintext word in `a0` on the
+/// encrypted channel, gated by a `Session` capability at slot `SESSION_CAP`. On
+/// success `a0 = 0`, `a1` = ciphertext, `a2`/`a3` = tag, `a4` = nonce;
+/// `a0 = usize::MAX` if the caller lacks the capability.
+#[cfg(target_arch = "riscv64")]
+pub fn seal(frame: &mut crate::trap::TrapFrame) {
+    const SESSION_CAP: usize = 0;
+    let ok = SCHED.with(|s| {
+        crate::cap::has_session(&s.tasks[s.current].as_ref().unwrap().caps, SESSION_CAP)
+    });
+    if !ok {
+        let name = SCHED.with(|s| s.tasks[s.current].as_ref().unwrap().name);
+        crate::println!("crypto: '{name}' seal refused (no Session capability)");
+        frame.regs[9] = usize::MAX;
+        return;
+    }
+    let plain = frame.regs[9].to_le_bytes();
+    let (ct, tag, nonce) = crate::channel::seal_word(plain);
+    frame.regs[9] = 0;
+    frame.regs[10] = usize::from_le_bytes(ct);
+    frame.regs[11] = usize::from_le_bytes(tag[..8].try_into().unwrap());
+    frame.regs[12] = usize::from_le_bytes(tag[8..].try_into().unwrap());
+    frame.regs[13] = nonce as usize;
+}
+
+/// The `open` syscall (Phase 14): AEAD-decrypt the ciphertext word in `a0` (tag
+/// in `a1`/`a2`, nonce in `a3`), gated by a `Session` capability at slot
+/// `SESSION_CAP`. On success `a0 = 0`, `a1` = plaintext; `a0 = usize::MAX` on a
+/// bad tag or no capability.
+#[cfg(target_arch = "riscv64")]
+pub fn open(frame: &mut crate::trap::TrapFrame) {
+    const SESSION_CAP: usize = 0;
+    let ok = SCHED.with(|s| {
+        crate::cap::has_session(&s.tasks[s.current].as_ref().unwrap().caps, SESSION_CAP)
+    });
+    if !ok {
+        frame.regs[9] = usize::MAX;
+        return;
+    }
+    let ct = frame.regs[9].to_le_bytes();
+    let mut tag = [0u8; 16];
+    tag[..8].copy_from_slice(&frame.regs[10].to_le_bytes());
+    tag[8..].copy_from_slice(&frame.regs[11].to_le_bytes());
+    let nonce = frame.regs[12] as u64;
+    match crate::channel::open_word(ct, tag, nonce) {
+        Some(plain) => {
+            frame.regs[9] = 0;
+            frame.regs[10] = usize::from_le_bytes(plain);
+        }
+        None => frame.regs[9] = usize::MAX,
+    }
+}
+
 /// Service a `getrandom` syscall: if the caller holds a `Randomness`
 /// capability at index `a0` (= `frame.regs[9]`), fill `a1..a4` with 32 fresh
 /// bytes from the kernel entropy pool and set `a0 = 0`; otherwise set `a0 =

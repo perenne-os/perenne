@@ -40,6 +40,10 @@ pub enum Syscall {
     /// `revoke(ep_cap)` — revoke an endpoint capability from every other holder
     /// (the caller must hold it; it keeps its own).
     Revoke,
+    /// `seal(plaintext)` — AEAD-encrypt a word on the channel (Session-gated).
+    Seal,
+    /// `open(ciphertext, tag, nonce)` — AEAD-decrypt a word (Session-gated).
+    Open,
     /// An unrecognized syscall number (a user bug, not a kernel bug).
     Unknown(usize),
 }
@@ -59,6 +63,8 @@ pub fn decode_syscall(a7: usize) -> Syscall {
         10 => Syscall::WaitIrq,
         11 => Syscall::Grant,
         12 => Syscall::Revoke,
+        13 => Syscall::Seal,
+        14 => Syscall::Open,
         n => Syscall::Unknown(n),
     }
 }
@@ -158,6 +164,8 @@ mod tests {
         assert_eq!(decode_syscall(10), Syscall::WaitIrq);
         assert_eq!(decode_syscall(11), Syscall::Grant);
         assert_eq!(decode_syscall(12), Syscall::Revoke);
+        assert_eq!(decode_syscall(13), Syscall::Seal);
+        assert_eq!(decode_syscall(14), Syscall::Open);
     }
 }
 
@@ -230,6 +238,14 @@ pub fn dispatch(frame: &mut crate::trap::TrapFrame) -> Outcome {
         }
         Syscall::Revoke => {
             crate::sched::ipc_revoke(frame);
+            Outcome::Resume
+        }
+        Syscall::Seal => {
+            crate::sched::seal(frame);
+            Outcome::Resume
+        }
+        Syscall::Open => {
+            crate::sched::open(frame);
             Outcome::Resume
         }
         Syscall::Unknown(_) => {
