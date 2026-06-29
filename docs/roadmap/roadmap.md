@@ -513,12 +513,37 @@ than the recent increments:
   it to a user-space component (ADR 0007), like rng/blk, is a deferred refinement.
   QEMU-only.
 
-## Phase 16+ — Breadth
+## Phase 16 — The NIC becomes a user-space component  *(done — 2026-06-28)*
 
-- **Goal:** the long tail — move the NIC driver to a user-space component; a
-  minimal IP/UDP stack (DHCP, ping) + encrypting traffic with the Phase 14
-  channel; U-mode (end-to-end) crypto; epoch/generation revocation + a capability
-  derivation tree; per-component crash ledgers; growable records (a free-block
-  allocator, multi-block directories); more hardware (physical RISC-V board boot
-  4c, ARM/phones), a fuller HAL, and more device drivers.
+- **Goal:** pay back Phase 15's flagged deviation — relocate the `virtio-net`
+  driver out of the kernel into an unprivileged, capability-holding **U-mode
+  component** (ADR 0007), joining `rng`/`blk`, so the kernel never touches the NIC
+  registers. Done before any IP/UDP stack grows on top.
+- **You learn:** the `blk` model applied to a NIC — a U-mode component can't call
+  the host-tested `kernel_common::net`, so the **driver does only raw device
+  mechanics** over a shared identity-mapped DMA page while the **kernel
+  `net_resolver` client** builds/parses the ARP frame (pure logic stays
+  kernel-side); and two U-mode gotchas — no `for … in`/`Range` iterators in
+  `.user_text` (they may not inline → a call into kernel `.text` → an
+  `InstructionPageFault`), and a one-shot interrupt driver should `sys_exit` (not
+  idle on `recv`) so it doesn't park its last PLIC claim in-service (see
+  [learning note 0034](../learning/0034-user-space-nic.md)).
+- **Done when:** ✅ `./tools/test-qemu.ps1` shows `ipc: 'net' blocks on recv`,
+  `net: resolved 10.0.2.2 -> 52:55:0a:00:02:02`, and `sched: task 'net' exited
+  (code 0)` — the gateway MAC produced by the **U-mode driver**, with the rest of
+  the system (including the cross-boot KB write-back) running on. A U-mode
+  `net_component` (`.user_text`, two-queue bring-up + IRQ-driven exchange) + a
+  kernel `net_resolver`; `mem::map_device`/`net_resolve_gateway` retired;
+  MAX_TASKS 25→27; the per-boot smoke deadline 60s→90s (the NIC's scheduled work
+  shifts the demo a few ticks). QEMU-only.
+
+## Phase 17+ — Breadth
+
+- **Goal:** the long tail — a minimal IP/UDP stack (DHCP, ping) on the new NIC
+  driver + encrypting traffic with the Phase 14 channel; receiving unsolicited
+  frames (RX as an ongoing service, not a one-shot); U-mode (end-to-end) crypto;
+  epoch/generation revocation + a capability derivation tree; per-component crash
+  ledgers; growable records (a free-block allocator, multi-block directories);
+  more hardware (physical RISC-V board boot 4c, ARM/phones), a fuller HAL, and
+  more device drivers.
 - **Done when:** never, really — this is where it becomes a real, growing OS.

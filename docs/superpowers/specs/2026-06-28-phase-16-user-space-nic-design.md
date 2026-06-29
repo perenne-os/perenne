@@ -8,6 +8,29 @@ Phase 15 flagged: its virtio-net driver shipped **in the kernel** for pragmatism
 This phase relocates it to U-mode, joining `rng` and `blk` as the **third**
 unprivileged virtio driver, before any IP/UDP stack grows on top.
 
+## Implementation note (2026-06-28, during build)
+
+Shipped as designed: the `blk`-model split (U-mode `net_component` does raw
+mechanics; kernel `net_resolver` builds/parses ARP via the unchanged
+`kernel_common::net`), interrupt-driven via `wait_irq`, MAX_TASKS 25→27, and
+`mem::map_device` removed (with its now-unused `KERNEL_ROOT` static). Two
+deviations the boot smoke forced:
+
+- **No iterators in `.user_text`.** The driver's `for … in [queues]` and
+  `for _ in 0..16` (RX wait) compiled to `IntoIterator`/`Range::next` calls a
+  debug build didn't inline → calls into kernel `.text` the U-mode task can't
+  fetch → `InstructionPageFault`. Replaced with an `#[inline(always)]`
+  `virtio_queue_setup` helper called twice and a manual `while` counter (how
+  `entropy`/`blk` already avoid iterators).
+- **One-shot exit, not a recv loop.** `wait_irq` is what *completes* a PLIC claim;
+  a driver that serves once then loops on `recv` parks its last claim in-service.
+  So the driver does one ARP exchange then `sys_exit(0)` (the `entropy`
+  bounded-work pattern). The resolver still calls it exactly once.
+- **Deadline 60s → 90s.** Moving the NIC into the scheduler shifts the
+  self-healing demo a few ticks later; the write-back still completes (blk recovers
+  on the timer tick), so the per-boot smoke deadline rose (it bounds only the
+  failure case).
+
 ## The gap
 
 Phase 15 opened networking, but `net_resolve_gateway` runs in the kernel and
