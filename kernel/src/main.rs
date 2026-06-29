@@ -1527,16 +1527,40 @@ mod bare {
         }
     }
 
+    /// Point one virtio queue `q` at its descriptor/avail/used rings and mark it
+    /// ready. `#[inline(always)]` so it folds into the U-mode caller's
+    /// `.user_text` (a U-mode task can't call kernel code, and — unlike a kernel
+    /// task — must not use a `for … in [..]` loop, whose iterator may not inline
+    /// in a debug build and would become such a call).
+    #[inline(always)]
+    unsafe fn virtio_queue_setup(mmio: usize, q: u32, desc: usize, avail: usize, used: usize) {
+        mmio_w(mmio, virtio::QUEUE_SEL, q);
+        mmio_w(mmio, virtio::QUEUE_NUM, virtio::VQ_SIZE);
+        mmio_w(mmio, virtio::QUEUE_DESC_LOW, desc as u32);
+        mmio_w(mmio, virtio::QUEUE_DESC_HIGH, (desc >> 32) as u32);
+        mmio_w(mmio, virtio::QUEUE_DRIVER_LOW, avail as u32);
+        mmio_w(mmio, virtio::QUEUE_DRIVER_HIGH, (avail >> 32) as u32);
+        mmio_w(mmio, virtio::QUEUE_DEVICE_LOW, used as u32);
+        mmio_w(mmio, virtio::QUEUE_DEVICE_HIGH, (used >> 32) as u32);
+        mmio_w(mmio, virtio::QUEUE_READY, 1);
+    }
+
     /// The user-space virtio-net driver (Phase 16, ADR 0007). It exclusively
     /// owns the NIC — the MMIO + DMA frame are mapped RW-U into THIS component
     /// only — and the kernel never touches the device. Raw mechanics only: the
     /// modern two-queue bring-up (RX=0, TX=1), one pre-posted RX buffer, then a
-    /// call/reply loop: each call's badge is the TX frame length; it publishes
-    /// the TX descriptor, notifies, blocks on the device IRQ until the RX used
-    /// ring advances, and replies the received length (0 = none). The ARP frame
-    /// is built/parsed by the kernel `net_resolver` client in the shared DMA
-    /// page (a U-mode task can't call `kernel_common::net`). Only one exchange is
-    /// served (one RX buffer posted) — all this phase needs.
+    /// single call/reply exchange: the call's badge is the TX frame length; it
+    /// publishes the TX descriptor, notifies, blocks on the device IRQ until the
+    /// RX used ring advances, replies the received length (0 = none), and exits.
+    /// The ARP frame is built/parsed by the kernel `net_resolver` client in the
+    /// shared DMA page (a U-mode task can't call `kernel_common::net`).
+    ///
+    /// It serves exactly one exchange then `sys_exit`s (like the `entropy`
+    /// component's bounded work) rather than looping on `recv`: a live NIC keeps
+    /// taking unsolicited SLIRP frames, and a recv-blocked driver would leave its
+    /// last device IRQ claimed-but-not-completed (the next `wait_irq` is what
+    /// completes a claim) — parking an in-service IRQ that gates the
+    /// equal-priority `blk` source. Exiting drops the device out of service.
     #[no_mangle]
     #[link_section = ".user_text"]
     extern "C" fn net_component() -> ! {
@@ -1572,17 +1596,10 @@ mod bare {
             mmio_w(mmio, virtio::DRIVER_FEATURES, 0);
             mmio_w(mmio, virtio::STATUS,
                 virtio::STATUS_ACK | virtio::STATUS_DRIVER | virtio::STATUS_FEATURES_OK);
-            for (q, d, a, u) in [(0u32, rx_desc, rx_avail, rx_used), (1, tx_desc, tx_avail, tx_used)] {
-                mmio_w(mmio, virtio::QUEUE_SEL, q);
-                mmio_w(mmio, virtio::QUEUE_NUM, virtio::VQ_SIZE);
-                mmio_w(mmio, virtio::QUEUE_DESC_LOW, d as u32);
-                mmio_w(mmio, virtio::QUEUE_DESC_HIGH, (d >> 32) as u32);
-                mmio_w(mmio, virtio::QUEUE_DRIVER_LOW, a as u32);
-                mmio_w(mmio, virtio::QUEUE_DRIVER_HIGH, (a >> 32) as u32);
-                mmio_w(mmio, virtio::QUEUE_DEVICE_LOW, u as u32);
-                mmio_w(mmio, virtio::QUEUE_DEVICE_HIGH, (u >> 32) as u32);
-                mmio_w(mmio, virtio::QUEUE_READY, 1);
-            }
+            // Two queues, set up with explicit calls (no `for … in [..]` — its
+            // iterator may not inline in U-mode; see `virtio_queue_setup`).
+            virtio_queue_setup(mmio, 0, rx_desc, rx_avail, rx_used);
+            virtio_queue_setup(mmio, 1, tx_desc, tx_avail, tx_used);
             mmio_w(mmio, virtio::STATUS,
                 virtio::STATUS_ACK | virtio::STATUS_DRIVER | virtio::STATUS_FEATURES_OK | virtio::STATUS_DRIVER_OK);
 
@@ -1596,42 +1613,42 @@ mod bare {
             dma_w16(rx_avail + 2, 1); // avail.idx
             dma_fence();
 
-            let mut tx_idx: u16 = 0;
-            loop {
-                // badge = total TX length (12-byte virtio_net_hdr + ARP frame),
-                // already written into tx_buf by the kernel resolver.
-                let tx_len = sys_recv(NET_EP_CAP, NET_REPLY_SLOT);
+            // badge = total TX length (12-byte virtio_net_hdr + ARP frame),
+            // already written into tx_buf by the kernel resolver.
+            let tx_len = sys_recv(NET_EP_CAP, NET_REPLY_SLOT);
 
-                // publish the TX descriptor (device reads), notify queue 1.
-                dma_w64(tx_desc, tx_buf as u64);
-                dma_w32(tx_desc + 8, tx_len as u32);
-                dma_w16(tx_desc + 12, 0);
-                dma_w16(tx_desc + 14, 0);
-                dma_w16(tx_avail + 4 + (tx_idx as usize % virtio::VQ_SIZE as usize) * 2, 0);
-                dma_fence();
-                dma_w16(tx_avail + 2, tx_idx + 1);
-                dma_fence();
-                mmio_w(mmio, virtio::QUEUE_NOTIFY, 1);
-                tx_idx = tx_idx.wrapping_add(1);
+            // publish the TX descriptor (device reads), notify queue 1.
+            dma_w64(tx_desc, tx_buf as u64);
+            dma_w32(tx_desc + 8, tx_len as u32);
+            dma_w16(tx_desc + 12, 0);
+            dma_w16(tx_desc + 14, 0);
+            dma_w16(tx_avail + 4, 0); // ring[0] -> desc 0
+            dma_fence();
+            dma_w16(tx_avail + 2, 1); // avail.idx
+            dma_fence();
+            mmio_w(mmio, virtio::QUEUE_NOTIFY, 1);
 
-                // Block on the device IRQ until the RX used ring advances. A
-                // TX-completion IRQ may wake us first; ack and re-wait. Bounded so
-                // a genuine no-reply replies 0.
-                let mut rx_len: usize = 0;
-                for _ in 0..16 {
-                    sys_wait_irq(NET_IRQ_CAP);
-                    let is = mmio_r(mmio, virtio::INTERRUPT_STATUS);
-                    if is != 0 {
-                        mmio_w(mmio, virtio::INTERRUPT_ACK, is);
-                    }
-                    if dma_r16(rx_used + 2) != 0 {
-                        // used-ring element 0: id(u32 @ +4), len(u32 @ +8).
-                        rx_len = dma_r32(rx_used + 8) as usize;
-                        break;
-                    }
+            // Block on the device IRQ until the RX used ring advances. A
+            // TX-completion IRQ may wake us first; ack and re-wait. Bounded so a
+            // genuine no-reply replies 0. A manual counter, not `for _ in 0..16`
+            // — its Range iterator may not inline in U-mode.
+            let mut rx_len: usize = 0;
+            let mut attempts: u32 = 0;
+            while attempts < 16 {
+                sys_wait_irq(NET_IRQ_CAP);
+                let is = mmio_r(mmio, virtio::INTERRUPT_STATUS);
+                if is != 0 {
+                    mmio_w(mmio, virtio::INTERRUPT_ACK, is);
                 }
-                sys_reply(NET_REPLY_SLOT, rx_len);
+                if dma_r16(rx_used + 2) != 0 {
+                    // used-ring element 0: id(u32 @ +4), len(u32 @ +8).
+                    rx_len = dma_r32(rx_used + 8) as usize;
+                    break;
+                }
+                attempts += 1;
             }
+            sys_reply(NET_REPLY_SLOT, rx_len);
+            sys_exit(0)
         }
     }
 

@@ -100,11 +100,15 @@ function Invoke-Boot([string[]]$mustMatch, [string]$serialLog) {
     )
     $missing = $mustMatch
     try {
-        # 60s: boot 1's write-back adds ~5 blk ops, each gated to ~one-per-tick
+        # 90s: boot 1's write-back adds ~5 blk ops, each gated to ~one-per-tick
         # by the blk IRQ-recovery constraint (see learning note 0023/0024), and
-        # ticks run a few seconds each in this debug build. The loop exits as
-        # soon as every pattern is seen, so this only bounds the failure case.
-        $deadline = (Get-Date).AddSeconds(60)
+        # ticks run a few seconds each in this debug build. Phase 16 moved the NIC
+        # driver into the scheduler (a U-mode `net` component + `net_resolver`),
+        # whose early ARP exchange competes in the round-robin and shifts the
+        # self-healing demo a few ticks later — so the deadline rose 60s -> 90s.
+        # The loop exits as soon as every pattern is seen, so this only bounds the
+        # failure case.
+        $deadline = (Get-Date).AddSeconds(90)
         while ((Get-Date) -lt $deadline) {
             Start-Sleep -Milliseconds 500
             $text = Read-LogText $serialLog
