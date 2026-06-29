@@ -514,6 +514,10 @@ mod bare {
     /// builds the ARP request into `NET_DMA_PA + 0xC00 + 12` and reads the reply
     /// from `NET_DMA_PA + 0x400 + 12`. Set by `kmain`.
     static mut NET_DMA_PA: usize = 0;
+    /// The stack's configured source IPv4 address. `0.0.0.0` (unconfigured) until
+    /// a DHCP lease is adopted (Phase 18); the sole source of the send path's
+    /// source IP, replacing the former hardcoded constant.
+    static mut NET_IP: [u8; 4] = [0, 0, 0, 0];
     /// The block currently resident in the DMA data page (the one-block cache);
     /// `-1` = none. Re-reading the same block skips the IPC round-trip.
     static mut FS_CACHED_BLOCK: i64 = -1;
@@ -1668,12 +1672,37 @@ mod bare {
         }
     }
 
-    /// The kernel client for the user-space `net` driver (Phase 16/17). It runs
-    /// two exchanges through the shared identity-mapped DMA page: (1) ARP-resolve
-    /// the gateway (Phase 15/16 regression), then (2) a DHCP DISCOVER→OFFER to
-    /// learn our IP from the network (Phase 17). All wire framing is the
-    /// host-tested `kernel_common::net`; the driver only moves bytes. It then
-    /// tells the driver to exit (NET_DONE) and idles.
+    /// Build a broadcast DHCP UDP frame around `payload` into the shared TX buffer,
+    /// call the net driver to transmit + receive, and return the reply's UDP
+    /// payload (the next caller reuses the buffer, so parse the result before the
+    /// next round). `None` on no reply / not UDP-to-the-client-port.
+    ///
+    /// # Safety
+    /// `tx_frame`/`rx_frame` must point into the kernel-owned, identity-mapped net
+    /// DMA frame; single hart owns it for the call.
+    unsafe fn dhcp_round(tx_frame: usize, rx_frame: usize, src_mac: &[u8; 6], payload: &[u8]) -> Option<&'static [u8]> {
+        use kernel_common::net;
+        let txf = core::slice::from_raw_parts_mut(tx_frame as *mut u8, 512);
+        let frame_len = net::udp::build(
+            src_mac, &[0xffu8; 6], [0, 0, 0, 0], [255, 255, 255, 255],
+            net::dhcp::CLIENT_PORT, net::dhcp::SERVER_PORT, 0, payload, txf,
+        );
+        let rx_len = sched::call_message(NET_EP_CAP, 12 + frame_len);
+        if rx_len == 0 {
+            return None;
+        }
+        let flen = rx_len.saturating_sub(12).min(2036);
+        let rxf = core::slice::from_raw_parts(rx_frame as *const u8, flen);
+        net::udp::parse(rxf, net::dhcp::CLIENT_PORT)
+    }
+
+    /// The kernel client for the user-space `net` driver (Phase 18). It completes
+    /// a full DHCP lease (DISCOVER → OFFER → REQUEST → ACK) over the shared DMA
+    /// page, ADOPTS the leased address into `NET_IP` (retiring the hardcoded
+    /// source constant), then ARP-resolves the gateway using the adopted IP — the
+    /// leased address flowing into a real frame. All framing is the host-tested
+    /// `kernel_common::net`; the driver only moves bytes. It then tells the driver
+    /// to exit (NET_DONE) and idles.
     extern "C" fn net_client() -> ! {
         use kernel_common::net;
         // SAFETY: NET_DMA_PA is the kernel-allocated, identity-mapped DMA frame;
@@ -1683,51 +1712,52 @@ mod bare {
             let tx_frame = dma + 0xC00 + 12; // after the 12-byte virtio_net_hdr
             let rx_frame = dma + 0x400 + 12;
             let src_mac = [0x52u8, 0x54, 0x00, 0x12, 0x34, 0x56];
+            let xid = 0x1234_5678u32;
 
-            // --- exchange 1: ARP resolve the gateway ---
+            // --- DISCOVER -> OFFER ---
+            let mut disc = [0u8; net::dhcp::DISCOVER_LEN];
+            net::dhcp::build_discover(xid, &src_mac, &mut disc);
+            let offer = dhcp_round(tx_frame, rx_frame, &src_mac, &disc)
+                .and_then(|p| net::dhcp::parse_offer(p, xid));
+            match offer {
+                Some(o) => println!("net: dhcp offered {}.{}.{}.{}", o.yiaddr[0], o.yiaddr[1], o.yiaddr[2], o.yiaddr[3]),
+                None => println!("net: no dhcp offer"),
+            }
+
+            // --- REQUEST -> ACK, then adopt ---
+            if let Some(o) = offer {
+                let mut req = [0u8; net::dhcp::REQUEST_LEN];
+                net::dhcp::build_request(xid, &src_mac, o.yiaddr, o.server_id, &mut req);
+                let ack = dhcp_round(tx_frame, rx_frame, &src_mac, &req)
+                    .and_then(|p| net::dhcp::parse_ack(p, xid));
+                match ack {
+                    Some(ip) => {
+                        println!("net: dhcp leased {}.{}.{}.{} (ack)", ip[0], ip[1], ip[2], ip[3]);
+                        NET_IP = ip; // adopt
+                        println!("net: adopted ip {}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3]);
+                    }
+                    None => println!("net: no dhcp ack"),
+                }
+            }
+
+            // --- ARP the gateway from the adopted source IP ---
             let txf = core::slice::from_raw_parts_mut(tx_frame as *mut u8, net::ARP_FRAME_LEN);
-            let arp_len = net::build_request(&src_mac, [10, 0, 2, 15], [10, 0, 2, 2], txf);
+            let arp_len = net::build_request(&src_mac, NET_IP, [10, 0, 2, 2], txf);
             let rx_len = sched::call_message(NET_EP_CAP, 12 + arp_len);
             let mut resolved = false;
             if rx_len != 0 {
                 let rxf = core::slice::from_raw_parts(rx_frame as *const u8, net::ARP_FRAME_LEN);
                 if let Some(mac) = net::parse_reply(rxf, [10, 0, 2, 2]) {
                     println!(
-                        "net: resolved 10.0.2.2 -> {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-                        mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
+                        "net: resolved 10.0.2.2 -> {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} (src {}.{}.{}.{})",
+                        mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
+                        NET_IP[0], NET_IP[1], NET_IP[2], NET_IP[3]
                     );
                     resolved = true;
                 }
             }
             if !resolved {
                 println!("net: no ARP reply");
-            }
-
-            // --- exchange 2: DHCP DISCOVER -> OFFER (learn our IP) ---
-            let xid = 0x1234_5678u32;
-            let mut disc = [0u8; net::dhcp::DISCOVER_LEN];
-            net::dhcp::build_discover(xid, &src_mac, &mut disc);
-            let frame_len = {
-                let txf = core::slice::from_raw_parts_mut(tx_frame as *mut u8, 512);
-                net::udp::build(
-                    &src_mac, &[0xffu8; 6], [0, 0, 0, 0], [255, 255, 255, 255],
-                    net::dhcp::CLIENT_PORT, net::dhcp::SERVER_PORT, xid as u16, &disc, txf,
-                )
-            };
-            let rx_len = sched::call_message(NET_EP_CAP, 12 + frame_len);
-            let mut offered = false;
-            if rx_len != 0 {
-                let flen = rx_len.saturating_sub(12).min(2036);
-                let rxf = core::slice::from_raw_parts(rx_frame as *const u8, flen);
-                if let Some(payload) = net::udp::parse(rxf, net::dhcp::CLIENT_PORT) {
-                    if let Some(ip) = net::dhcp::parse_offer(payload, xid) {
-                        println!("net: dhcp offered {}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3]);
-                        offered = true;
-                    }
-                }
-            }
-            if !offered {
-                println!("net: no dhcp offer");
             }
 
             // --- tell the driver to exit ---
