@@ -561,13 +561,37 @@ than the recent increments:
   *read* the offered IP but do not yet complete the lease (REQUEST/ACK) or adopt it
   (the source IP stays the hardcoded `10.0.2.15`). QEMU-only.
 
-## Phase 18+ — Breadth
+## Phase 18 — Complete the DHCP lease & adopt the IP  *(done — 2026-06-29)*
 
-- **Goal:** the long tail — complete the DHCP lease (REQUEST/ACK) and **adopt** the
-  offered IP; DNS over the same UDP layer; ICMP echo (ping); receiving unsolicited
-  datagrams as an ongoing service (not a one-shot); encrypting UDP payloads with
-  the Phase 14 channel; U-mode (end-to-end) crypto; epoch/generation revocation + a
-  capability derivation tree; per-component crash ledgers; growable records (a
-  free-block allocator, multi-block directories); more hardware (physical RISC-V
-  board boot 4c, ARM/phones), a fuller HAL, and more device drivers.
+- **Goal:** finish the DHCP handshake (DISCOVER→OFFER→**REQUEST→ACK**) and make the
+  leased address the stack's **real** source IP — stored in a kernel `NET_IP`
+  static (retiring the hardcoded constant) and used in a post-lease gateway ARP —
+  so the OS is configured *by the network*.
+- **You learn:** the full DORA handshake and why the REQUEST must echo the OFFER's
+  **server identifier** (option 54) — it selects which server's offer you accept
+  (and many servers stay silent without options 50/54); that "adopting" the IP
+  means routing the send path through one mutable `NET_IP` the protocol fills in,
+  not a constant; and the honest framing that, since SLIRP leases the same
+  `10.0.2.15` we hardcoded, adoption is proven by the plumbing (`0.0.0.0` →
+  leased), not a different value (see
+  [learning note 0036](../learning/0036-dhcp-lease-adopt.md)).
+- **Done when:** ✅ `./tools/test-qemu.ps1` shows, in order, `net: dhcp offered
+  10.0.2.15`, `net: dhcp leased 10.0.2.15 (ack)`, `net: adopted ip 10.0.2.15`, and
+  `net: resolved 10.0.2.2 -> 52:55:0a:00:02:02 (src 10.0.2.15)`, with the cross-boot
+  self-healing demo still passing. New host-tested `dhcp::{Offer, build_request,
+  parse_ack}` + a TLV `option` helper; a `NET_IP` static + reordered `net_client`
+  (lease → adopt → ARP-from-`NET_IP`). SLIRP ACKed directly; no MAX_TASKS change.
+  We do not yet renew/expire the lease or adopt the netmask/router/DNS options.
+  QEMU-only.
+
+## Phase 19+ — Breadth
+
+- **Goal:** the long tail — lease renewal/expiry (T1/T2 timers) and adopting the
+  netmask/router/DNS options DHCP offers; DNS resolution and ICMP echo (ping) over
+  the now-configured stack; receiving unsolicited datagrams as an ongoing service
+  (not a one-shot); encrypting UDP payloads with the Phase 14 channel; U-mode
+  (end-to-end) crypto; epoch/generation revocation + a capability derivation tree;
+  per-component crash ledgers; growable records (a free-block allocator,
+  multi-block directories); more hardware (physical RISC-V board boot 4c,
+  ARM/phones), a fuller HAL, and more device drivers.
 - **Done when:** never, really — this is where it becomes a real, growing OS.

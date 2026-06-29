@@ -7,6 +7,17 @@ discarded it (source IP stayed hardcoded). This finishes the handshake
 (REQUEST/ACK) and makes the leased address the stack's **real** source IP, so the
 OS is configured *by the network* rather than by a constant.
 
+## Implementation note (2026-06-29, during build)
+
+Shipped exactly as designed, no deviations. The `Offer` struct + `option`/`is_reply`
+refactor and `build_request`/`parse_ack` landed first (4 `dhcp_*` host tests green);
+`net_client` was reordered (lease → adopt into `NET_IP` → ARP from `NET_IP`), the
+hardcoded source constant removed. **SLIRP returned a DHCPACK directly** — no
+OFFER-address fallback needed: the boot smoke shows `net: dhcp offered 10.0.2.15`,
+`net: dhcp leased 10.0.2.15 (ack)`, `net: adopted ip 10.0.2.15`, and `net: resolved
+10.0.2.2 -> 52:55:0a:00:02:02 (src 10.0.2.15)`, then `sched: task 'net' exited
+(code 0)`, with both cross-boot self-healing boots still green. No MAX_TASKS change.
+
 ## The gap
 
 Phase 17's `net_client` broadcasts a DISCOVER, parses the OFFER's address, prints
