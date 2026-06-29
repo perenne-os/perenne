@@ -193,10 +193,20 @@ pub mod dhcp {
     const OP_REPLY: u8 = 2;
     const MSG_DISCOVER: u8 = 1;
     const MSG_OFFER: u8 = 2;
+    const MSG_REQUEST: u8 = 3;
+    const MSG_ACK: u8 = 5;
     /// BOOTP fixed area (op..file) before the magic cookie.
     const BOOTP_FIXED: usize = 236;
     /// DISCOVER payload: fixed area + cookie(4) + option 53 (3) + end (1).
     pub const DISCOVER_LEN: usize = BOOTP_FIXED + 4 + 3 + 1;
+
+    /// What a DHCPOFFER tells us: the offered address and the server identifier
+    /// (option 54) that a REQUEST must echo so the right server commits the lease.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct Offer {
+        pub yiaddr: [u8; 4],
+        pub server_id: [u8; 4],
+    }
 
     /// Build a DHCPDISCOVER BOOTP payload into `out` (>= DISCOVER_LEN). The
     /// broadcast flag is set so the OFFER is broadcast back (we have no IP yet).
@@ -221,39 +231,56 @@ pub mod dhcp {
     }
 
     /// If `payload` is a DHCPOFFER (BOOTREPLY, our `xid`, magic cookie, message
-    /// type OFFER), return the offered address (`yiaddr`). `None` otherwise.
-    pub fn parse_offer(payload: &[u8], xid: u32) -> Option<[u8; 4]> {
-        if payload.len() < 240 {
+    /// type OFFER), return the offered address and server id. `None` otherwise.
+    pub fn parse_offer(payload: &[u8], xid: u32) -> Option<Offer> {
+        if !is_reply(payload, xid, MSG_OFFER) {
             return None;
         }
-        if payload[0] != OP_REPLY || payload[4..8] != xid.to_be_bytes() || payload[236..240] != MAGIC {
-            return None;
+        let mut yiaddr = [0u8; 4];
+        yiaddr.copy_from_slice(&payload[16..20]);
+        let mut server_id = [0u8; 4];
+        if let Some(s) = option(&payload[240..], 54) {
+            if s.len() >= 4 {
+                server_id.copy_from_slice(&s[..4]);
+            }
         }
-        if !msg_type_is(&payload[240..], MSG_OFFER) {
-            return None;
-        }
-        let mut ip = [0u8; 4];
-        ip.copy_from_slice(&payload[16..20]); // yiaddr
-        Some(ip)
+        Some(Offer { yiaddr, server_id })
     }
 
-    /// Walk the TLV option area for option 53 (DHCP message type) == `want`.
-    fn msg_type_is(opts: &[u8], want: u8) -> bool {
+    /// Common BOOTREPLY guard: length, op = reply, our `xid`, magic cookie, and
+    /// DHCP message type (option 53) == `msg_type`.
+    fn is_reply(payload: &[u8], xid: u32, msg_type: u8) -> bool {
+        payload.len() >= 240
+            && payload[0] == OP_REPLY
+            && payload[4..8] == xid.to_be_bytes()
+            && payload[236..240] == MAGIC
+            && option(&payload[240..], 53).and_then(|v| v.first()).copied() == Some(msg_type)
+    }
+
+    /// Walk the TLV option area for `code`, returning its value bytes. `0` = pad,
+    /// `255` = end; every other option is `code, len, value…`.
+    fn option(opts: &[u8], code: u8) -> Option<&[u8]> {
         let mut i = 0;
         while i < opts.len() {
             match opts[i] {
-                0 => i += 1,         // pad
-                255 => return false, // end
-                53 => return i + 2 < opts.len() && opts[i + 1] >= 1 && opts[i + 2] == want,
-                _ => {
+                0 => i += 1,
+                255 => return None,
+                c => {
                     if i + 1 >= opts.len() {
-                        return false;
+                        return None;
                     }
-                    i += 2 + opts[i + 1] as usize;
+                    let len = opts[i + 1] as usize;
+                    if i + 2 + len > opts.len() {
+                        return None;
+                    }
+                    if c == code {
+                        return Some(&opts[i + 2..i + 2 + len]);
+                    }
+                    i += 2 + len;
                 }
             }
         }
-        false
+        None
     }
 }
 
@@ -369,7 +396,7 @@ mod tests {
         offer[0] = 2; // BOOTREPLY
         offer[16..20].copy_from_slice(&[10, 0, 2, 15]); // yiaddr
         offer[242] = 2; // option 53 value = OFFER
-        assert_eq!(dhcp::parse_offer(&offer, xid), Some([10, 0, 2, 15]));
+        assert_eq!(dhcp::parse_offer(&offer, xid).map(|o| o.yiaddr), Some([10, 0, 2, 15]));
     }
 
     #[test]
