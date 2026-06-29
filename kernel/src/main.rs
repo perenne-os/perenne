@@ -492,6 +492,9 @@ mod bare {
     const NET_EP_CAP: usize = 0;
     const NET_IRQ_CAP: usize = 1;
     const NET_REPLY_SLOT: usize = 2;
+    /// Sentinel badge that tells the net driver to exit (no real frame has
+    /// length 0). The kernel `net_client` sends it after its last exchange.
+    const NET_DONE: usize = 0;
 
     /// Phase 6c — the KB-ready gate. Patients block on this endpoint on their
     /// first run so they cannot crash before the loader builds the on-disk KB
@@ -1603,52 +1606,65 @@ mod bare {
             mmio_w(mmio, virtio::STATUS,
                 virtio::STATUS_ACK | virtio::STATUS_DRIVER | virtio::STATUS_FEATURES_OK | virtio::STATUS_DRIVER_OK);
 
-            // --- pre-post one RX buffer (device-writable) ---
-            dma_w64(rx_desc, rx_buf as u64);
-            dma_w32(rx_desc + 8, 2048);
-            dma_w16(rx_desc + 12, virtio::VIRTQ_DESC_F_WRITE);
-            dma_w16(rx_desc + 14, 0);
-            dma_w16(rx_avail + 4, 0); // ring[0] -> desc 0
-            dma_fence();
-            dma_w16(rx_avail + 2, 1); // avail.idx
-            dma_fence();
-
-            // badge = total TX length (12-byte virtio_net_hdr + ARP frame),
-            // already written into tx_buf by the kernel resolver.
-            let tx_len = sys_recv(NET_EP_CAP, NET_REPLY_SLOT);
-
-            // publish the TX descriptor (device reads), notify queue 1.
-            dma_w64(tx_desc, tx_buf as u64);
-            dma_w32(tx_desc + 8, tx_len as u32);
-            dma_w16(tx_desc + 12, 0);
-            dma_w16(tx_desc + 14, 0);
-            dma_w16(tx_avail + 4, 0); // ring[0] -> desc 0
-            dma_fence();
-            dma_w16(tx_avail + 2, 1); // avail.idx
-            dma_fence();
-            mmio_w(mmio, virtio::QUEUE_NOTIFY, 1);
-
-            // Block on the device IRQ until the RX used ring advances. A
-            // TX-completion IRQ may wake us first; ack and re-wait. Bounded so a
-            // genuine no-reply replies 0. A manual counter, not `for _ in 0..16`
-            // — its Range iterator may not inline in U-mode.
-            let mut rx_len: usize = 0;
-            let mut attempts: u32 = 0;
-            while attempts < 16 {
-                sys_wait_irq(NET_IRQ_CAP);
-                let is = mmio_r(mmio, virtio::INTERRUPT_STATUS);
-                if is != 0 {
-                    mmio_w(mmio, virtio::INTERRUPT_ACK, is);
+            // Serve exchanges until told to exit. Each exchange: re-post a fresh
+            // RX buffer (the device consumes one per reply), transmit the caller's
+            // frame, block on the IRQ until the RX used ring advances, reply the
+            // received length. A bounded server, not a recv-idle loop: it exits on
+            // NET_DONE so its last device IRQ claim isn't left parked in-service.
+            let mut seq: u16 = 0;
+            loop {
+                // badge = total TX length (12-byte virtio_net_hdr + frame), or
+                // NET_DONE to stop.
+                let badge = sys_recv(NET_EP_CAP, NET_REPLY_SLOT);
+                if badge == NET_DONE {
+                    sys_reply(NET_REPLY_SLOT, 0);
+                    sys_exit(0)
                 }
-                if dma_r16(rx_used + 2) != 0 {
-                    // used-ring element 0: id(u32 @ +4), len(u32 @ +8).
-                    rx_len = dma_r32(rx_used + 8) as usize;
-                    break;
+                let slot = (seq % virtio::VQ_SIZE as u16) as usize;
+
+                // post a fresh RX buffer (device writes into rx_buf)
+                dma_w64(rx_desc, rx_buf as u64);
+                dma_w32(rx_desc + 8, 2048);
+                dma_w16(rx_desc + 12, virtio::VIRTQ_DESC_F_WRITE);
+                dma_w16(rx_desc + 14, 0);
+                dma_w16(rx_avail + 4 + slot * 2, 0); // ring[slot] -> desc 0
+                dma_fence();
+                dma_w16(rx_avail + 2, seq + 1);
+                dma_fence();
+
+                // publish the TX descriptor (device reads tx_buf), notify queue 1
+                dma_w64(tx_desc, tx_buf as u64);
+                dma_w32(tx_desc + 8, badge as u32);
+                dma_w16(tx_desc + 12, 0);
+                dma_w16(tx_desc + 14, 0);
+                dma_w16(tx_avail + 4 + slot * 2, 0);
+                dma_fence();
+                dma_w16(tx_avail + 2, seq + 1);
+                dma_fence();
+                mmio_w(mmio, virtio::QUEUE_NOTIFY, 1);
+
+                // Block on the IRQ until the RX used ring reaches seq+1. A
+                // TX-completion IRQ may wake us first; ack and re-wait. Bounded so
+                // a genuine no-reply replies 0. Manual `while`, not `for 0..16`
+                // (Range iterators may not inline in U-mode).
+                let mut rx_len: usize = 0;
+                let mut attempts: u32 = 0;
+                while attempts < 16 {
+                    sys_wait_irq(NET_IRQ_CAP);
+                    let is = mmio_r(mmio, virtio::INTERRUPT_STATUS);
+                    if is != 0 {
+                        mmio_w(mmio, virtio::INTERRUPT_ACK, is);
+                    }
+                    if dma_r16(rx_used + 2) == seq + 1 {
+                        // used-ring element `slot`: id(u32) then len(u32).
+                        rx_len = dma_r32(rx_used + 8 + slot * 8) as usize;
+                        break;
+                    }
+                    attempts += 1;
                 }
-                attempts += 1;
+                seq = seq.wrapping_add(1);
+                sys_reply(NET_REPLY_SLOT, rx_len);
             }
-            sys_reply(NET_REPLY_SLOT, rx_len);
-            sys_exit(0)
         }
     }
 
