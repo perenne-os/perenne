@@ -230,6 +230,59 @@ pub mod dhcp {
         DISCOVER_LEN
     }
 
+    /// REQUEST payload: fixed area + cookie(4) + opt 53 (3) + opt 50 (6) +
+    /// opt 54 (6) + end (1).
+    pub const REQUEST_LEN: usize = BOOTP_FIXED + 4 + 3 + 6 + 6 + 1;
+
+    /// Build a DHCPREQUEST into `out` (>= REQUEST_LEN): broadcast like DISCOVER,
+    /// message type REQUEST, with option 50 (requested IP = the offer's `yiaddr`)
+    /// and option 54 (server id from the offer). Returns the payload length.
+    pub fn build_request(
+        xid: u32,
+        client_mac: &[u8; 6],
+        requested_ip: [u8; 4],
+        server_id: [u8; 4],
+        out: &mut [u8],
+    ) -> usize {
+        let p = &mut out[..REQUEST_LEN];
+        for b in p.iter_mut() {
+            *b = 0;
+        }
+        p[0] = OP_REQUEST;
+        p[1] = 1; // htype = Ethernet
+        p[2] = 6; // hlen
+        p[4..8].copy_from_slice(&xid.to_be_bytes());
+        p[10..12].copy_from_slice(&0x8000u16.to_be_bytes()); // flags: broadcast
+        p[28..34].copy_from_slice(client_mac); // chaddr
+        p[236..240].copy_from_slice(&MAGIC);
+        let mut o = 240;
+        p[o] = 53; // DHCP message type
+        p[o + 1] = 1;
+        p[o + 2] = MSG_REQUEST;
+        o += 3;
+        p[o] = 50; // requested IP address
+        p[o + 1] = 4;
+        p[o + 2..o + 6].copy_from_slice(&requested_ip);
+        o += 6;
+        p[o] = 54; // server identifier
+        p[o + 1] = 4;
+        p[o + 2..o + 6].copy_from_slice(&server_id);
+        o += 6;
+        p[o] = 255; // end
+        REQUEST_LEN
+    }
+
+    /// If `payload` is a DHCPACK (BOOTREPLY, our `xid`, magic cookie, message type
+    /// ACK), return the confirmed address (`yiaddr`). `None` otherwise.
+    pub fn parse_ack(payload: &[u8], xid: u32) -> Option<[u8; 4]> {
+        if !is_reply(payload, xid, MSG_ACK) {
+            return None;
+        }
+        let mut ip = [0u8; 4];
+        ip.copy_from_slice(&payload[16..20]);
+        Some(ip)
+    }
+
     /// If `payload` is a DHCPOFFER (BOOTREPLY, our `xid`, magic cookie, message
     /// type OFFER), return the offered address and server id. `None` otherwise.
     pub fn parse_offer(payload: &[u8], xid: u32) -> Option<Offer> {
@@ -415,5 +468,40 @@ mod tests {
         let mut not_offer = offer;
         not_offer[242] = 1; // msg type DISCOVER, not OFFER
         assert!(dhcp::parse_offer(&not_offer, xid).is_none(), "not an offer");
+    }
+
+    #[test]
+    fn dhcp_request_build_then_reparse() {
+        let mac = [0x52u8, 0x54, 0x00, 0x12, 0x34, 0x56];
+        let xid = 0x1234_5678u32;
+        let mut req = [0u8; dhcp::REQUEST_LEN];
+        let n = dhcp::build_request(xid, &mac, [10, 0, 2, 15], [10, 0, 2, 2], &mut req);
+        assert_eq!(n, dhcp::REQUEST_LEN);
+        assert_eq!(req[0], 1, "BOOTREQUEST");
+        assert_eq!(&req[4..8], &xid.to_be_bytes());
+        assert_eq!(&req[236..240], &[0x63, 0x82, 0x53, 0x63], "magic cookie");
+        // Options: 53=REQUEST(3), 50=requested IP, 54=server id, end.
+        assert_eq!(&req[240..243], &[53, 1, 3], "msg type = REQUEST");
+        assert_eq!(&req[243..249], &[50, 4, 10, 0, 2, 15], "requested IP");
+        assert_eq!(&req[249..255], &[54, 4, 10, 0, 2, 2], "server id");
+        assert_eq!(req[255], 255, "end");
+    }
+
+    #[test]
+    fn dhcp_parse_ack_returns_address() {
+        let mac = [0x52u8, 0x54, 0x00, 0x12, 0x34, 0x56];
+        let xid = 0x1234_5678u32;
+        // Start from a REQUEST, turn it into the ACK the server would send.
+        let mut ack = [0u8; dhcp::REQUEST_LEN];
+        dhcp::build_request(xid, &mac, [10, 0, 2, 15], [10, 0, 2, 2], &mut ack);
+        ack[0] = 2; // BOOTREPLY
+        ack[16..20].copy_from_slice(&[10, 0, 2, 15]); // yiaddr
+        ack[242] = 5; // option 53 value = ACK
+        assert_eq!(dhcp::parse_ack(&ack, xid), Some([10, 0, 2, 15]));
+        // Rejections.
+        assert!(dhcp::parse_ack(&ack, 0x9999_9999).is_none(), "wrong xid");
+        let mut not_ack = ack;
+        not_ack[242] = 2; // OFFER, not ACK
+        assert!(dhcp::parse_ack(&not_ack, xid).is_none(), "not an ack");
     }
 }
