@@ -145,6 +145,7 @@ $mustMatch1 = @(
     "crypto: 'nocap' seal refused \(no Session capability\)",
     "sched: task 'nocap' exited \(code 15\)",
     "net: resolved 10.0.2.2 -> 52:55:0a:00:02:02",
+    "net: dhcp offered 10.0.2.15",
     "shell: ready \(type 'help'\)",
     "commands: help, kb, diag",
     "KB-0005 \(seen \d+\)  User-space component terminated by a fatal fault",
