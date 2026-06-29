@@ -8,6 +8,18 @@ protocol layer**: IPv4 + UDP. The proof is a DHCP exchange — the OS *learns it
 own IP from the network* instead of hardcoding it (echoing Phase 4a, which read
 RAM/timebase from firmware rather than hardcoding QEMU's values).
 
+## Implementation note (2026-06-29, during build)
+
+Shipped exactly as designed, no deviations. The host-tested `ipv4`/`udp`/`dhcp`
+submodules landed first (6 new tests green, including the canonical IPv4 checksum
+vector `0xb861`); the `net` driver became a bounded server (RX re-post per
+exchange, `NET_DONE` = 0 exit); `net_resolver` → `net_client` runs ARP then DHCP.
+**SLIRP answered the DISCOVER directly** — no TX-only fallback needed: the boot
+smoke shows `net: resolved 10.0.2.2 -> 52:55:0a:00:02:02`, `net: dhcp offered
+10.0.2.15`, then `sched: task 'net' exited (code 0)`, with both cross-boot
+self-healing boots still green (the 90s deadline from Phase 16 held). UDP checksum
+0 and the BOOTP broadcast flag worked as expected; no MAX_TASKS change.
+
 ## The gap
 
 The OS can put one fixed-format Ethernet frame (ARP) on the wire, but has no IP

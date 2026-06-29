@@ -537,13 +537,37 @@ than the recent increments:
   MAX_TASKS 25→27; the per-boot smoke deadline 60s→90s (the NIC's scheduled work
   shifts the demo a few ticks). QEMU-only.
 
-## Phase 17+ — Breadth
+## Phase 17 — Minimal IP/UDP stack: DHCP-learn-our-IP  *(done — 2026-06-29)*
 
-- **Goal:** the long tail — a minimal IP/UDP stack (DHCP, ping) on the new NIC
-  driver + encrypting traffic with the Phase 14 channel; receiving unsolicited
-  frames (RX as an ongoing service, not a one-shot); U-mode (end-to-end) crypto;
-  epoch/generation revocation + a capability derivation tree; per-component crash
-  ledgers; growable records (a free-block allocator, multi-block directories);
-  more hardware (physical RISC-V board boot 4c, ARM/phones), a fuller HAL, and
-  more device drivers.
+- **Goal:** the first real protocol layer on the Phase 16 NIC — IPv4 + UDP — proven
+  by a **DHCP** exchange: broadcast a DISCOVER and parse the OFFER, so the OS
+  **learns its own IP (`10.0.2.15`) from the network** instead of hardcoding it
+  (echoing Phase 4a reading RAM/timebase from firmware).
+- **You learn:** that a packet is nested build/parse over one buffer
+  (`Ethernet[ IPv4[ UDP[ DHCP ] ] ]`), each layer a pure slice-in/slice-out
+  function (so the whole stack is host-testable with no device); the IPv4 header
+  checksum (RFC 1071 one's-complement — a valid header re-checksums to 0, and UDP's
+  checksum is optional over IPv4 so we send 0); why DHCP is the right first UDP
+  milestone (SLIRP answers it **locally** — hermetic, unlike host-forwarded DNS —
+  and it needs the BOOTP **broadcast flag** since we have no IP yet); and
+  generalizing the NIC driver from one-shot to a **bounded server** (re-post RX per
+  exchange, exit on a `NET_DONE` sentinel so the last device IRQ isn't parked
+  in-service) (see [learning note 0035](../learning/0035-ip-udp-dhcp.md)).
+- **Done when:** ✅ `./tools/test-qemu.ps1` shows both
+  `net: resolved 10.0.2.2 -> 52:55:0a:00:02:02` and `net: dhcp offered 10.0.2.15`,
+  then `sched: task 'net' exited (code 0)`, with the cross-boot self-healing demo
+  still passing. New host-tested `kernel_common::net::{ipv4, udp, dhcp}`; the
+  bounded-server `net_component`; `net_resolver` → `net_client` (ARP then DHCP). We
+  *read* the offered IP but do not yet complete the lease (REQUEST/ACK) or adopt it
+  (the source IP stays the hardcoded `10.0.2.15`). QEMU-only.
+
+## Phase 18+ — Breadth
+
+- **Goal:** the long tail — complete the DHCP lease (REQUEST/ACK) and **adopt** the
+  offered IP; DNS over the same UDP layer; ICMP echo (ping); receiving unsolicited
+  datagrams as an ongoing service (not a one-shot); encrypting UDP payloads with
+  the Phase 14 channel; U-mode (end-to-end) crypto; epoch/generation revocation + a
+  capability derivation tree; per-component crash ledgers; growable records (a
+  free-block allocator, multi-block directories); more hardware (physical RISC-V
+  board boot 4c, ARM/phones), a fuller HAL, and more device drivers.
 - **Done when:** never, really — this is where it becomes a real, growing OS.
