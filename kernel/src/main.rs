@@ -336,10 +336,10 @@ mod bare {
             // SAFETY: the trap handler and the PLIC are set up to service it.
             unsafe { csr::sie_enable_external() };
 
-            // The resolver is the net driver's client: grant it the service cap.
-            let netres = sched::spawn("netres", net_resolver,
+            // The client is the net driver's caller: grant it the service cap.
+            let netcli = sched::spawn("netcli", net_client,
                 core::ptr::addr_of!(KS_NETRES) as usize + TASK_STACK);
-            sched::grant_cap(netres, NET_EP_CAP, Capability::Endpoint(NET_EP));
+            sched::grant_cap(netcli, NET_EP_CAP, Capability::Endpoint(NET_EP));
         } else {
             println!("net: no virtio-net device found");
         }
@@ -1668,12 +1668,13 @@ mod bare {
         }
     }
 
-    /// The kernel client for the user-space `net` driver (Phase 16). It builds
-    /// the ARP request into the shared identity-mapped DMA page (host-tested
-    /// `kernel_common::net`), `call`s the driver to transmit + receive, then
-    /// parses the reply and reports the gateway MAC. The ARP logic stays
-    /// kernel-side and pure — exactly as `fs` stayed kernel-side over `blk`.
-    extern "C" fn net_resolver() -> ! {
+    /// The kernel client for the user-space `net` driver (Phase 16/17). It runs
+    /// two exchanges through the shared identity-mapped DMA page: (1) ARP-resolve
+    /// the gateway (Phase 15/16 regression), then (2) a DHCP DISCOVER→OFFER to
+    /// learn our IP from the network (Phase 17). All wire framing is the
+    /// host-tested `kernel_common::net`; the driver only moves bytes. It then
+    /// tells the driver to exit (NET_DONE) and idles.
+    extern "C" fn net_client() -> ! {
         use kernel_common::net;
         // SAFETY: NET_DMA_PA is the kernel-allocated, identity-mapped DMA frame;
         // single hart owns it. The driver shares the same physical frame RW-U.
@@ -1682,13 +1683,11 @@ mod bare {
             let tx_frame = dma + 0xC00 + 12; // after the 12-byte virtio_net_hdr
             let rx_frame = dma + 0x400 + 12;
             let src_mac = [0x52u8, 0x54, 0x00, 0x12, 0x34, 0x56];
+
+            // --- exchange 1: ARP resolve the gateway ---
             let txf = core::slice::from_raw_parts_mut(tx_frame as *mut u8, net::ARP_FRAME_LEN);
             let arp_len = net::build_request(&src_mac, [10, 0, 2, 15], [10, 0, 2, 2], txf);
-
-            // Call the driver: badge = total TX length (header + ARP). Blocks
-            // until the driver replies the received length (0 = no reply).
             let rx_len = sched::call_message(NET_EP_CAP, 12 + arp_len);
-
             let mut resolved = false;
             if rx_len != 0 {
                 let rxf = core::slice::from_raw_parts(rx_frame as *const u8, net::ARP_FRAME_LEN);
@@ -1703,6 +1702,36 @@ mod bare {
             if !resolved {
                 println!("net: no ARP reply");
             }
+
+            // --- exchange 2: DHCP DISCOVER -> OFFER (learn our IP) ---
+            let xid = 0x1234_5678u32;
+            let mut disc = [0u8; net::dhcp::DISCOVER_LEN];
+            net::dhcp::build_discover(xid, &src_mac, &mut disc);
+            let frame_len = {
+                let txf = core::slice::from_raw_parts_mut(tx_frame as *mut u8, 512);
+                net::udp::build(
+                    &src_mac, &[0xffu8; 6], [0, 0, 0, 0], [255, 255, 255, 255],
+                    net::dhcp::CLIENT_PORT, net::dhcp::SERVER_PORT, xid as u16, &disc, txf,
+                )
+            };
+            let rx_len = sched::call_message(NET_EP_CAP, 12 + frame_len);
+            let mut offered = false;
+            if rx_len != 0 {
+                let flen = rx_len.saturating_sub(12).min(2036);
+                let rxf = core::slice::from_raw_parts(rx_frame as *const u8, flen);
+                if let Some(payload) = net::udp::parse(rxf, net::dhcp::CLIENT_PORT) {
+                    if let Some(ip) = net::dhcp::parse_offer(payload, xid) {
+                        println!("net: dhcp offered {}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3]);
+                        offered = true;
+                    }
+                }
+            }
+            if !offered {
+                println!("net: no dhcp offer");
+            }
+
+            // --- tell the driver to exit ---
+            let _ = sched::call_message(NET_EP_CAP, NET_DONE);
         }
         // Done: idle like the other one-shot kernel tasks.
         loop {
