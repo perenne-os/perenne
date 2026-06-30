@@ -603,15 +603,37 @@ than the recent increments:
   reusing `ipv4::checksum`); `net_client` captures the gateway MAC and adds a fourth
   exchange. No new task, no MAX_TASKS change. QEMU-only.
 
-## Phase 20+ — Breadth
+## Phase 20 — Reply to an inbound ping  *(done — 2026-06-29)*
 
-- **Goal:** the long tail — ping RTT/statistics and pinging arbitrary/external
-  hosts; replying to *inbound* pings; ICMP error types (destination-unreachable,
-  TTL-exceeded); DNS resolution over the UDP layer; DHCP lease renewal/expiry (T1/T2
-  timers) + adopting the netmask/router/DNS options; receiving unsolicited datagrams
-  as an ongoing service; encrypting traffic with the Phase 14 channel; U-mode
-  (end-to-end) crypto; epoch/generation revocation + a capability derivation tree;
-  per-component crash ledgers; growable records (a free-block allocator, multi-block
-  directories); more hardware (physical RISC-V board boot 4c, ARM/phones), a fuller
-  HAL, and more device drivers.
+- **Goal:** the receive-and-respond half of Phase 19 — given an ICMP Echo Request
+  addressed to the OS, build and emit a correct Echo Reply, so the OS acts as a
+  network endpoint, not just a client.
+- **You learn:** that a reply is a request *reflected* — `build_echo_reply` swaps
+  the Ethernet MACs and the IPv4 src/dst, flips the ICMP type 8→0, copies
+  identifier/sequence/payload verbatim, and recomputes both checksums (reusing
+  `ipv4::checksum`), so the responder is ~30 lines of mostly byte-swaps; and the
+  honest harness limit — SLIRP user-networking forwards **no inbound ICMP** and
+  won't loop a self-addressed packet back (and an over-the-wire self-ping would
+  hang the bounded driver, which always waits for a reply), so the responder is
+  proven on a **synthesized** inbound request (the Phase 9 precedent for an
+  un-injectable input) (see [learning note 0038](../learning/0038-inbound-ping-reply.md)).
+- **Done when:** ✅ `./tools/test-qemu.ps1` shows `net: replied to inbound ping
+  (self-demo, seq 0)` after the DHCP/ARP/ping lines, with the cross-boot
+  self-healing demo still passing. New host-tested `net::icmp::{is_echo_request,
+  build_echo_reply}` reusing `ipv4::checksum`; `net_client` runs the real responder
+  on a synthesized request. No driver change, no new task, no MAX_TASKS change. A
+  *real* inbound ping needs a non-SLIRP backend (deferred). QEMU-only.
+
+## Phase 21+ — Breadth
+
+- **Goal:** the long tail — a persistent ping responder (the driver as a long-lived
+  RX service, not a bounded one-shot); replying to *external* pings via a non-SLIRP
+  backend (tap / second QEMU); ping RTT/statistics; ICMP error types
+  (destination-unreachable, TTL-exceeded); DNS resolution over the UDP layer; DHCP
+  lease renewal/expiry (T1/T2 timers) + adopting the netmask/router/DNS options;
+  receiving unsolicited datagrams as an ongoing service; encrypting traffic with the
+  Phase 14 channel; U-mode (end-to-end) crypto; epoch/generation revocation + a
+  capability derivation tree; per-component crash ledgers; growable records (a
+  free-block allocator, multi-block directories); more hardware (physical RISC-V
+  board boot 4c, ARM/phones), a fuller HAL, and more device drivers.
 - **Done when:** never, really — this is where it becomes a real, growing OS.

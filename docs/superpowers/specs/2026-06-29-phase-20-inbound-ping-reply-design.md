@@ -6,6 +6,21 @@ implementing end-to-end)
 the receive-and-respond half: the OS **answers** an ICMP Echo Request addressed to
 it, the first time it acts as a network *server* at the IP layer.
 
+## Implementation note (2026-06-29, during build)
+
+The responder shipped as designed (`is_echo_request` + `build_echo_reply`, 2 host
+tests green, reusing `ipv4::checksum`). **The self-ping loopback did NOT work** —
+the spike (boot smoke) showed SLIRP forwards no inbound ICMP and does not loop a
+self-addressed packet back to the guest; an over-the-wire self-ping additionally
+**hangs the bounded driver** (it always waits for a reply that never arrives, with
+no fire-and-forget TX or wait timeout). So the shipped proof is the **synthetic
+self-demo** fallback the design anticipated: `net_client` runs the real responder
+on a fabricated inbound request and emits `net: replied to inbound ping (self-demo,
+seq 0)` — the responder is real, only the trigger is fabricated (Phase 9
+precedent). No driver change, no new task. Also fixed a stale "60s" → "90s" in the
+boot-test failure message (the deadline has been 90s since Phase 16). A real
+inbound ping (non-SLIRP backend) and a persistent responder are deferred.
+
 ## The gap
 
 The OS can compose and send an ICMP echo and parse the reply (Phase 19), but it
