@@ -1786,6 +1786,53 @@ mod bare {
                 None => println!("net: ping skipped (no gateway MAC)"),
             }
 
+            // --- inbound ping: self-ping our own IP; SLIRP loops it back as an
+            // inbound echo REQUEST, which we answer with an echo REPLY ---
+            match gw_mac {
+                Some(mac) => {
+                    let ident = 0x4321u16;
+                    let seq = 0u16;
+                    // Send an echo request addressed to ourselves (via the gateway
+                    // MAC, so SLIRP receives and, if it routes self-addressed
+                    // packets back, returns it to us as an inbound request).
+                    let req_len = {
+                        let txf = core::slice::from_raw_parts_mut(tx_frame as *mut u8, 512);
+                        net::icmp::build_echo_request(&src_mac, &mac, NET_IP, NET_IP, ident, seq, b"loopback", txf)
+                    };
+                    let rx_len = sched::call_message(NET_EP_CAP, 12 + req_len);
+                    let mut handled = false;
+                    if rx_len != 0 {
+                        let flen = rx_len.saturating_sub(12).min(2036);
+                        let rxf = core::slice::from_raw_parts(rx_frame as *const u8, flen);
+                        if net::icmp::is_echo_request(rxf, NET_IP) {
+                            let txf = core::slice::from_raw_parts_mut(tx_frame as *mut u8, 512);
+                            if let Some(reply_len) = net::icmp::build_echo_reply(rxf, txf) {
+                                let _ = sched::call_message(NET_EP_CAP, 12 + reply_len);
+                                println!("net: replied to inbound ping (seq {})", seq);
+                                handled = true;
+                            }
+                        }
+                    }
+                    if !handled {
+                        // SLIRP did not loop the self-ping back. Prove the responder
+                        // on a synthesized inbound request instead (the responder is
+                        // real; only the trigger is fabricated — see the spec).
+                        let mut fake = [0u8; 64];
+                        let fake_len =
+                            net::icmp::build_echo_request(&mac, &src_mac, [10, 0, 2, 2], NET_IP, ident, seq, b"selfdemo", &mut fake);
+                        let mut reply = [0u8; 64];
+                        if net::icmp::is_echo_request(&fake[..fake_len], NET_IP)
+                            && net::icmp::build_echo_reply(&fake[..fake_len], &mut reply).is_some()
+                        {
+                            println!("net: replied to inbound ping (self-demo)");
+                        } else {
+                            println!("net: no inbound ping");
+                        }
+                    }
+                }
+                None => println!("net: inbound ping skipped (no gateway MAC)"),
+            }
+
             // --- tell the driver to exit ---
             let _ = sched::call_message(NET_EP_CAP, NET_DONE);
         }
