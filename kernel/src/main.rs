@@ -1815,6 +1815,40 @@ mod bare {
                 None => println!("net: inbound ping skipped (no gateway MAC)"),
             }
 
+            // --- DNS: resolve a name to an IPv4 address via SLIRP's resolver
+            // (10.0.2.3, reached through gw_mac — SLIRP routes its virtual hosts
+            // through one MAC). The LAST exchange: SLIRP forwards DNS to the host
+            // resolver, so a no-answer would stall only this (everything above has
+            // already printed). ---
+            match gw_mac {
+                Some(mac) => {
+                    let txid = 0xABCDu16;
+                    let src_port = 0xC000u16;
+                    let mut q = [0u8; 64];
+                    let qlen = net::dns::build_query("example.com", txid, &mut q);
+                    let frame_len = {
+                        let txf = core::slice::from_raw_parts_mut(tx_frame as *mut u8, 512);
+                        net::udp::build(&src_mac, &mac, NET_IP, [10, 0, 2, 3], src_port, 53, 0, &q[..qlen], txf)
+                    };
+                    let rx_len = sched::call_message(NET_EP_CAP, 12 + frame_len);
+                    let mut resolved = false;
+                    if rx_len != 0 {
+                        let flen = rx_len.saturating_sub(12).min(2036);
+                        let rxf = core::slice::from_raw_parts(rx_frame as *const u8, flen);
+                        if let Some(payload) = net::udp::parse(rxf, src_port) {
+                            if let Some(ip) = net::dns::parse_response(payload, txid) {
+                                println!("net: dns example.com -> {}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3]);
+                                resolved = true;
+                            }
+                        }
+                    }
+                    if !resolved {
+                        println!("net: dns example.com: no answer");
+                    }
+                }
+                None => println!("net: dns skipped (no gateway MAC)"),
+            }
+
             // --- tell the driver to exit ---
             let _ = sched::call_message(NET_EP_CAP, NET_DONE);
         }
