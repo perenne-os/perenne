@@ -21,9 +21,9 @@ authors = ["Kathir"]
 repository = ""
 
 # Single source of truth for the provisional project name (see ADR 0006).
-# When the project is renamed, this and the crate names are the only
-# identifiers to update.
+# Project identity. The crate names (kernel, kernel-common, …) are an internal
+# detail and stay as-is — Perenne *is* a kernel — and may be re-prefixed later.
 [workspace.metadata.project]
-name = "kernel"
-display-name = "Kernel (working title)"
-provisional-name = true
+name = "perenne"
+display-name = "Perenne"
+provisional-name = false

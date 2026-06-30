@@ -13,8 +13,9 @@ Why a solo, multi-year project relies on these: memory fades, and "why did I do 
 | [0003](0003-first-target-riscv.md) | First target architecture: RISC-V on QEMU | Accepted |
 | [0004](0004-post-quantum-crypto.md) | Cryptography baseline: post-quantum | Accepted |
 | [0005](0005-self-healing-knowledge-organism.md) | Support model: self-healing knowledge organism | Accepted |
-| [0006](0006-project-name-placeholder.md) | Project name: provisional placeholder | Accepted |
+| [0006](0006-project-name-placeholder.md) | Project name: provisional placeholder | Superseded by 0008 |
 | [0007](0007-extensibility-user-space-components.md) | Extensibility: capability-holding user-space components | Accepted |
+| [0008](0008-project-name-perenne.md) | Project name: **Perenne** | Accepted |
 
 ## Template
 

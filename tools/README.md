@@ -29,7 +29,7 @@ equivalent of `run-qemu.ps1`.
   banner followed by:
 
   ```
-  hello world from Kernel (working title) - Phase 1 (hart 0)
+  hello world from Perenne - Phase 1 (hart 0)
   (kernel is idle; exit QEMU with Ctrl-A then X)
   ```
 

@@ -1,6 +1,6 @@
 # ADR 0006: Project name — provisional placeholder
 
-- **Status:** Accepted
+- **Status:** Superseded by [ADR 0008](0008-project-name-perenne.md) (the project is now named **Perenne**)
 - **Date:** 2026-06-06
 
 ## Context
