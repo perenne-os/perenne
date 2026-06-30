@@ -1744,7 +1744,7 @@ mod bare {
             let txf = core::slice::from_raw_parts_mut(tx_frame as *mut u8, net::ARP_FRAME_LEN);
             let arp_len = net::build_request(&src_mac, NET_IP, [10, 0, 2, 2], txf);
             let rx_len = sched::call_message(NET_EP_CAP, 12 + arp_len);
-            let mut resolved = false;
+            let mut gw_mac: Option<[u8; 6]> = None;
             if rx_len != 0 {
                 let rxf = core::slice::from_raw_parts(rx_frame as *const u8, net::ARP_FRAME_LEN);
                 if let Some(mac) = net::parse_reply(rxf, [10, 0, 2, 2]) {
@@ -1753,11 +1753,37 @@ mod bare {
                         mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
                         NET_IP[0], NET_IP[1], NET_IP[2], NET_IP[3]
                     );
-                    resolved = true;
+                    gw_mac = Some(mac);
                 }
             }
-            if !resolved {
+            if gw_mac.is_none() {
                 println!("net: no ARP reply");
+            }
+
+            // --- PING the gateway (ICMP echo) from the adopted IP ---
+            match gw_mac {
+                Some(mac) => {
+                    let ident = 0x1234u16;
+                    let seq = 0u16;
+                    let frame_len = {
+                        let txf = core::slice::from_raw_parts_mut(tx_frame as *mut u8, 128);
+                        net::icmp::build_echo_request(&src_mac, &mac, NET_IP, [10, 0, 2, 2], ident, seq, b"kernelOS", txf)
+                    };
+                    let rx_len = sched::call_message(NET_EP_CAP, 12 + frame_len);
+                    let mut replied = false;
+                    if rx_len != 0 {
+                        let flen = rx_len.saturating_sub(12).min(2036);
+                        let rxf = core::slice::from_raw_parts(rx_frame as *const u8, flen);
+                        if net::icmp::parse_echo_reply(rxf, ident, seq) {
+                            println!("net: ping 10.0.2.2: reply (seq {})", seq);
+                            replied = true;
+                        }
+                    }
+                    if !replied {
+                        println!("net: ping 10.0.2.2: no reply");
+                    }
+                }
+                None => println!("net: ping skipped (no gateway MAC)"),
             }
 
             // --- tell the driver to exit ---
