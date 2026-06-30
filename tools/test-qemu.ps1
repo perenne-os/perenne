@@ -151,6 +151,7 @@ $mustMatch1 = @(
     "net: resolved 10.0.2.2 -> 52:55:0a:00:02:02 \(src 10.0.2.15\)",
     "net: ping 10.0.2.2: reply \(seq 0\)",
     "net: replied to inbound ping \(self-demo, seq 0\)",
+    "net: dns example.com -> \d+\.\d+\.\d+\.\d+",
     "shell: ready \(type 'help'\)",
     "commands: help, kb, diag",
     "KB-0005 \(seen \d+\)  User-space component terminated by a fatal fault",
