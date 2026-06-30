@@ -337,6 +337,74 @@ pub mod dhcp {
     }
 }
 
+/// ICMP echo (ping) over IPv4. Reuses `ipv4::build_header` (protocol 1) and
+/// `ipv4::checksum` (ICMP uses the same RFC 1071 one's-complement checksum).
+pub mod icmp {
+    use super::ipv4;
+    pub const PROTO_ICMP: u8 = 1;
+    pub const ICMP_ECHO_REQUEST: u8 = 8;
+    pub const ICMP_ECHO_REPLY: u8 = 0;
+    /// ICMP echo header: type(1) + code(1) + checksum(2) + ident(2) + seq(2).
+    pub const ICMP_HDR_LEN: usize = 8;
+
+    /// Assemble Ethernet + IPv4 + ICMP Echo Request around `payload` into `frame`.
+    /// Returns the total frame length.
+    #[allow(clippy::too_many_arguments)]
+    pub fn build_echo_request(
+        src_mac: &[u8; 6],
+        dst_mac: &[u8; 6],
+        src_ip: [u8; 4],
+        dst_ip: [u8; 4],
+        ident: u16,
+        seq: u16,
+        payload: &[u8],
+        frame: &mut [u8],
+    ) -> usize {
+        // Ethernet header.
+        frame[0..6].copy_from_slice(dst_mac);
+        frame[6..12].copy_from_slice(src_mac);
+        frame[12..14].copy_from_slice(&ipv4::ETHERTYPE_IPV4.to_be_bytes());
+        // IPv4 header (covers the ICMP message).
+        let icmp_len = ICMP_HDR_LEN + payload.len();
+        let ip = super::ETH_HDR_LEN;
+        ipv4::build_header(src_ip, dst_ip, PROTO_ICMP, icmp_len, ident, &mut frame[ip..ip + ipv4::IPV4_HDR_LEN]);
+        // ICMP echo request.
+        let c = ip + ipv4::IPV4_HDR_LEN;
+        frame[c] = ICMP_ECHO_REQUEST;
+        frame[c + 1] = 0; // code
+        frame[c + 2..c + 4].copy_from_slice(&0u16.to_be_bytes()); // checksum: zero, then fill
+        frame[c + 4..c + 6].copy_from_slice(&ident.to_be_bytes());
+        frame[c + 6..c + 8].copy_from_slice(&seq.to_be_bytes());
+        frame[c + 8..c + 8 + payload.len()].copy_from_slice(payload);
+        let csum = ipv4::checksum(&frame[c..c + icmp_len]);
+        frame[c + 2..c + 4].copy_from_slice(&csum.to_be_bytes());
+        c + icmp_len
+    }
+
+    /// True iff `frame` is an IPv4/ICMP **Echo Reply** with the matching identifier
+    /// and sequence. Lenient on the reply's checksum (we trust the kernel demux).
+    pub fn parse_echo_reply(frame: &[u8], ident: u16, seq: u16) -> bool {
+        let eth = super::ETH_HDR_LEN;
+        if frame.len() < eth + ipv4::IPV4_HDR_LEN + ICMP_HDR_LEN {
+            return false;
+        }
+        if super::be16(&frame[12..14]) != ipv4::ETHERTYPE_IPV4 {
+            return false;
+        }
+        let ihl = (frame[eth] & 0x0f) as usize * 4;
+        if ihl < ipv4::IPV4_HDR_LEN || frame.len() < eth + ihl + ICMP_HDR_LEN {
+            return false;
+        }
+        if frame[eth + 9] != PROTO_ICMP {
+            return false;
+        }
+        let c = eth + ihl;
+        frame[c] == ICMP_ECHO_REPLY
+            && super::be16(&frame[c + 4..c + 6]) == ident
+            && super::be16(&frame[c + 6..c + 8]) == seq
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -503,5 +571,34 @@ mod tests {
         let mut not_ack = ack;
         not_ack[242] = 2; // OFFER, not ACK
         assert!(dhcp::parse_ack(&not_ack, xid).is_none(), "not an ack");
+    }
+
+    #[test]
+    fn icmp_build_then_parse_reply() {
+        let src_mac = [0x52u8, 0x54, 0x00, 0x12, 0x34, 0x56];
+        let dst_mac = [0x52u8, 0x55, 0x0a, 0x00, 0x02, 0x02];
+        let payload = b"kernelOS";
+        let mut frame = [0u8; 128];
+        let n = icmp::build_echo_request(&src_mac, &dst_mac, [10, 0, 2, 15], [10, 0, 2, 2], 0x1234, 0, payload, &mut frame);
+        // IPv4 header self-verifies; the ICMP message checksums to 0.
+        assert_eq!(ipv4::checksum(&frame[14..34]), 0);
+        assert_eq!(ipv4::checksum(&frame[34..n]), 0, "icmp checksum verifies");
+        // As built it is a request, not a reply.
+        assert!(!icmp::parse_echo_reply(&frame[..n], 0x1234, 0));
+        // Flip the ICMP type to Echo Reply -> parses; rejects wrong ident/seq.
+        let mut reply = frame;
+        reply[34] = icmp::ICMP_ECHO_REPLY;
+        assert!(icmp::parse_echo_reply(&reply[..n], 0x1234, 0));
+        assert!(!icmp::parse_echo_reply(&reply[..n], 0x9999, 0), "wrong ident");
+        assert!(!icmp::parse_echo_reply(&reply[..n], 0x1234, 7), "wrong seq");
+    }
+
+    #[test]
+    fn icmp_parse_reply_rejects_non_icmp() {
+        let mut frame = [0u8; 64];
+        frame[12..14].copy_from_slice(&0x0800u16.to_be_bytes()); // IPv4
+        frame[14] = 0x45; // version 4, IHL 5
+        frame[14 + 9] = 17; // protocol UDP, not ICMP
+        assert!(!icmp::parse_echo_reply(&frame, 0x1234, 0));
     }
 }
