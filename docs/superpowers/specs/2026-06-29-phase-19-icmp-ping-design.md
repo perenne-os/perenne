@@ -7,6 +7,16 @@ DHCP-configured address. This adds the OS's first round-trip it **initiates by I
 address**: an ICMP echo to the gateway, reusing the adopted IP (source) and the
 ARP-resolved gateway MAC (destination).
 
+## Implementation note (2026-06-29, during build)
+
+Shipped as designed, **full round-trip** — the spike paid off. The `icmp` submodule
+reuses `ipv4::build_header(proto=1)` and `ipv4::checksum` (2 host tests green);
+`net_client` captures the gateway MAC (formerly discarded) and adds a fourth
+exchange. **SLIRP answered the gateway ping directly** on the first boot — no
+TX-only fallback needed: the smoke shows `net: ping 10.0.2.2: reply (seq 0)` after
+the DHCP/adopt/ARP lines, with both cross-boot self-healing boots green. No new
+task, no MAX_TASKS change.
+
 ## The gap
 
 The stack can build IPv4/UDP and is configured with a leased address, but it has

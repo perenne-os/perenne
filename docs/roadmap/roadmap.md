@@ -584,14 +584,34 @@ than the recent increments:
   We do not yet renew/expire the lease or adopt the netmask/router/DNS options.
   QEMU-only.
 
-## Phase 19+ — Breadth
+## Phase 19 — ICMP echo (ping) the gateway  *(done — 2026-06-29)*
 
-- **Goal:** the long tail — lease renewal/expiry (T1/T2 timers) and adopting the
-  netmask/router/DNS options DHCP offers; DNS resolution and ICMP echo (ping) over
-  the now-configured stack; receiving unsolicited datagrams as an ongoing service
-  (not a one-shot); encrypting UDP payloads with the Phase 14 channel; U-mode
+- **Goal:** the OS's first IP round-trip it **initiates by address** — send an ICMP
+  Echo Request to the gateway `10.0.2.2` over the configured stack and receive the
+  Echo Reply, reusing the DHCP-adopted IP (source) and the ARP-resolved gateway MAC
+  (destination).
+- **You learn:** that a "new protocol" can be almost no new code — ICMP is IPv4
+  protocol 1 and reuses the **same RFC 1071 checksum** as the IPv4 header, so it is
+  ~30 lines on top of `ipv4`; that ping is the first action where all three
+  networking phases **compose** (`DHCP → adopt → ARP → ping`, each step feeding the
+  next); and that the boot smoke served as the spike for the one unknown — whether
+  SLIRP answers a gateway ping (it did, directly, no fallback) (see
+  [learning note 0037](../learning/0037-icmp-ping.md)).
+- **Done when:** ✅ `./tools/test-qemu.ps1` shows `net: ping 10.0.2.2: reply (seq 0)`
+  after the DHCP/adopt/ARP lines, with the cross-boot self-healing demo still
+  passing. New host-tested `net::icmp` (`build_echo_request`/`parse_echo_reply`
+  reusing `ipv4::checksum`); `net_client` captures the gateway MAC and adds a fourth
+  exchange. No new task, no MAX_TASKS change. QEMU-only.
+
+## Phase 20+ — Breadth
+
+- **Goal:** the long tail — ping RTT/statistics and pinging arbitrary/external
+  hosts; replying to *inbound* pings; ICMP error types (destination-unreachable,
+  TTL-exceeded); DNS resolution over the UDP layer; DHCP lease renewal/expiry (T1/T2
+  timers) + adopting the netmask/router/DNS options; receiving unsolicited datagrams
+  as an ongoing service; encrypting traffic with the Phase 14 channel; U-mode
   (end-to-end) crypto; epoch/generation revocation + a capability derivation tree;
-  per-component crash ledgers; growable records (a free-block allocator,
-  multi-block directories); more hardware (physical RISC-V board boot 4c,
-  ARM/phones), a fuller HAL, and more device drivers.
+  per-component crash ledgers; growable records (a free-block allocator, multi-block
+  directories); more hardware (physical RISC-V board boot 4c, ARM/phones), a fuller
+  HAL, and more device drivers.
 - **Done when:** never, really — this is where it becomes a real, growing OS.
