@@ -6,6 +6,18 @@ implementing end-to-end)
 DHCP-configured; DNS is the first time it turns a *human name* into an address, the
 thing every real network use begins with.
 
+## Implementation note (2026-06-30, during build)
+
+Shipped as designed, **real round-trip** — the spike paid off. The `dns` module
+(`build_query` + `parse_response` with compression-pointer skipping) landed first
+(2 host tests green); `net_client` wraps the query in `udp` to `10.0.2.3` as the
+last exchange. **This harness has working host DNS**, so SLIRP's resolver forwarded
+and answered the A query — no self-demo fallback needed: the boot smoke shows
+`net: dns example.com -> 172.66.147.243` (a live Cloudflare address; asserted as any
+IPv4 since real records vary), then `sched: task 'net' exited (code 0)`, with both
+cross-boot self-healing boots green. `10.0.2.3` reached via `gw_mac` (SLIRP's
+shared virtual-host MAC) as planned. No new task, no MAX_TASKS change.
+
 ## The gap
 
 The OS can address hosts by IP (ping, DHCP, ARP), but has no way to resolve a

@@ -624,16 +624,38 @@ than the recent increments:
   on a synthesized request. No driver change, no new task, no MAX_TASKS change. A
   *real* inbound ping needs a non-SLIRP backend (deferred). QEMU-only.
 
-## Phase 21+ — Breadth
+## Phase 21 — DNS resolution (name → IP)  *(done — 2026-06-30)*
 
-- **Goal:** the long tail — a persistent ping responder (the driver as a long-lived
-  RX service, not a bounded one-shot); replying to *external* pings via a non-SLIRP
-  backend (tap / second QEMU); ping RTT/statistics; ICMP error types
-  (destination-unreachable, TTL-exceeded); DNS resolution over the UDP layer; DHCP
+- **Goal:** turn a human name into an address — query SLIRP's DNS server
+  (`10.0.2.3`) over the existing UDP layer for `example.com`'s A record and print
+  the resolved IP, the entry point to every real network interaction.
+- **You learn:** that DNS is just a UDP payload — a 12-byte header + a question
+  whose name is **length-prefixed labels** (`7 example 3 com 0`); the one parsing
+  subtlety, **name compression** (an answer's name is usually a `0xC0` pointer back
+  into the packet, so a generic `skip_name` is needed); and the hermeticity
+  difference — SLIRP answers ARP/DHCP/gateway-ping **locally** but **forwards** DNS
+  to the host resolver, so it depends on host networking (and an unanswered query
+  would hang the bounded driver), spiked via the boot smoke (see
+  [learning note 0039](../learning/0039-dns-resolution.md)).
+- **Done when:** ✅ `./tools/test-qemu.ps1` shows `net: dns example.com -> <ip>`
+  (a live A record, asserted as any IPv4 since the value varies) after the existing
+  net lines, with the cross-boot self-healing demo still passing. New host-tested
+  `net::dns::{build_query, parse_response}` (with compression-pointer skipping);
+  `net_client` wraps the query in `udp` to `10.0.2.3`. SLIRP's resolver answered
+  directly — real round-trip, no fallback. No new task, no MAX_TASKS change.
+  QEMU-only.
+
+## Phase 22+ — Breadth
+
+- **Goal:** the long tail — **use** the resolved IP for a real exchange
+  (ping/connect to it); DNS caching + AAAA/other record types; a persistent ping
+  responder (the driver as a long-lived RX service, not a bounded one-shot);
+  replying to *external* pings via a non-SLIRP backend (tap / second QEMU); ping
+  RTT/statistics; ICMP error types (destination-unreachable, TTL-exceeded); DHCP
   lease renewal/expiry (T1/T2 timers) + adopting the netmask/router/DNS options;
-  receiving unsolicited datagrams as an ongoing service; encrypting traffic with the
-  Phase 14 channel; U-mode (end-to-end) crypto; epoch/generation revocation + a
-  capability derivation tree; per-component crash ledgers; growable records (a
-  free-block allocator, multi-block directories); more hardware (physical RISC-V
-  board boot 4c, ARM/phones), a fuller HAL, and more device drivers.
+  encrypting traffic with the Phase 14 channel; U-mode (end-to-end) crypto;
+  epoch/generation revocation + a capability derivation tree; per-component crash
+  ledgers; growable records (a free-block allocator, multi-block directories); more
+  hardware (physical RISC-V board boot 4c, ARM/phones), a fuller HAL, and more
+  device drivers.
 - **Done when:** never, really — this is where it becomes a real, growing OS.
