@@ -465,6 +465,89 @@ pub mod icmp {
     }
 }
 
+/// Minimal DNS: build an A-record query, parse the first A record from a reply.
+/// Big-endian on the wire. Kernel-side only (uses iterators / `&str`).
+pub mod dns {
+    /// Build a DNS A-record query for `name` into `out` (>= name length + 18).
+    /// Returns the payload length.
+    pub fn build_query(name: &str, txid: u16, out: &mut [u8]) -> usize {
+        out[0..2].copy_from_slice(&txid.to_be_bytes());
+        out[2..4].copy_from_slice(&0x0100u16.to_be_bytes()); // recursion desired
+        out[4..6].copy_from_slice(&1u16.to_be_bytes()); // QDCOUNT
+        out[6..12].copy_from_slice(&[0u8; 6]); // ANCOUNT/NSCOUNT/ARCOUNT
+        let mut i = 12;
+        for label in name.split('.') {
+            let bytes = label.as_bytes();
+            out[i] = bytes.len() as u8;
+            i += 1;
+            out[i..i + bytes.len()].copy_from_slice(bytes);
+            i += bytes.len();
+        }
+        out[i] = 0; // root label
+        i += 1;
+        out[i..i + 2].copy_from_slice(&1u16.to_be_bytes()); // QTYPE A
+        out[i + 2..i + 4].copy_from_slice(&1u16.to_be_bytes()); // QCLASS IN
+        i + 4
+    }
+
+    /// Parse a DNS response: verify the id and the response flag, skip the
+    /// question(s), and return the first A record's IP. `None` on a wrong id, a
+    /// non-response, no answers, or no A record.
+    pub fn parse_response(payload: &[u8], txid: u16) -> Option<[u8; 4]> {
+        if payload.len() < 12 || be16(&payload[0..2]) != txid {
+            return None;
+        }
+        if be16(&payload[2..4]) & 0x8000 == 0 {
+            return None; // QR not set: not a response
+        }
+        let qdcount = be16(&payload[4..6]);
+        let ancount = be16(&payload[6..8]);
+        if ancount == 0 {
+            return None;
+        }
+        let mut i = 12;
+        // Skip the questions: NAME + QTYPE(2) + QCLASS(2).
+        for _ in 0..qdcount {
+            i = skip_name(payload, i)?;
+            i += 4;
+        }
+        // Walk the answers for the first A record.
+        for _ in 0..ancount {
+            i = skip_name(payload, i)?;
+            if i + 10 > payload.len() {
+                return None;
+            }
+            let atype = be16(&payload[i..i + 2]);
+            let rdlength = be16(&payload[i + 8..i + 10]) as usize;
+            i += 10;
+            if atype == 1 && rdlength == 4 && i + 4 <= payload.len() {
+                return Some([payload[i], payload[i + 1], payload[i + 2], payload[i + 3]]);
+            }
+            i += rdlength;
+        }
+        None
+    }
+
+    fn be16(b: &[u8]) -> u16 {
+        u16::from_be_bytes([b[0], b[1]])
+    }
+
+    /// Advance past a DNS name at `i`: a `0xC0` compression pointer is 2 bytes; a
+    /// label is `1 + len` bytes; the root `0` is 1 byte. `None` if it runs off.
+    fn skip_name(payload: &[u8], mut i: usize) -> Option<usize> {
+        loop {
+            let b = *payload.get(i)?;
+            if b & 0xc0 == 0xc0 {
+                return Some(i + 2); // pointer
+            }
+            if b == 0 {
+                return Some(i + 1); // root
+            }
+            i += 1 + b as usize; // label
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -702,5 +785,57 @@ mod tests {
         frame[14 + 9] = 17; // UDP
         let mut out = [0u8; 64];
         assert!(icmp::build_echo_reply(&frame, &mut out).is_none());
+    }
+
+    #[test]
+    fn dns_build_query_encodes_name_and_qtype() {
+        let mut out = [0u8; 64];
+        let n = dns::build_query("example.com", 0xabcd, &mut out);
+        // Header: id, flags 0x0100 (RD), QDCOUNT 1, AN/NS/AR 0.
+        assert_eq!(&out[0..2], &0xabcdu16.to_be_bytes());
+        assert_eq!(&out[2..4], &0x0100u16.to_be_bytes());
+        assert_eq!(&out[4..6], &1u16.to_be_bytes(), "QDCOUNT 1");
+        assert_eq!(&out[6..12], &[0, 0, 0, 0, 0, 0], "AN/NS/AR 0");
+        // QNAME: 7 'example' 3 'com' 0
+        assert_eq!(out[12], 7);
+        assert_eq!(&out[13..20], b"example");
+        assert_eq!(out[20], 3);
+        assert_eq!(&out[21..24], b"com");
+        assert_eq!(out[24], 0, "root label");
+        // QTYPE A (1), QCLASS IN (1).
+        assert_eq!(&out[25..27], &1u16.to_be_bytes());
+        assert_eq!(&out[27..29], &1u16.to_be_bytes());
+        assert_eq!(n, 29);
+    }
+
+    #[test]
+    fn dns_parse_response_returns_first_a_record() {
+        // Synthesize: header (id 0xabcd, QR set, ANCOUNT 1), the question, and one
+        // A answer whose NAME is a compression pointer (0xc0 0x0c -> the question).
+        let mut r = [0u8; 64];
+        r[0..2].copy_from_slice(&0xabcdu16.to_be_bytes());
+        r[2..4].copy_from_slice(&0x8180u16.to_be_bytes()); // QR + RD + RA
+        r[4..6].copy_from_slice(&1u16.to_be_bytes()); // QDCOUNT
+        r[6..8].copy_from_slice(&1u16.to_be_bytes()); // ANCOUNT
+        // Question at offset 12: 7 example 3 com 0, QTYPE A, QCLASS IN.
+        let q = [7u8, b'e', b'x', b'a', b'm', b'p', b'l', b'e', 3, b'c', b'o', b'm', 0, 0, 1, 0, 1];
+        r[12..12 + q.len()].copy_from_slice(&q);
+        // Answer at offset 12+17=29.
+        let mut i = 12 + q.len();
+        r[i] = 0xc0; // name pointer ...
+        r[i + 1] = 0x0c; // -> offset 12
+        i += 2;
+        r[i..i + 2].copy_from_slice(&1u16.to_be_bytes()); // TYPE A
+        r[i + 2..i + 4].copy_from_slice(&1u16.to_be_bytes()); // CLASS IN
+        r[i + 4..i + 8].copy_from_slice(&300u32.to_be_bytes()); // TTL
+        r[i + 8..i + 10].copy_from_slice(&4u16.to_be_bytes()); // RDLENGTH
+        r[i + 10..i + 14].copy_from_slice(&[93, 184, 216, 34]); // RDATA
+        let end = i + 14;
+        assert_eq!(dns::parse_response(&r[..end], 0xabcd), Some([93, 184, 216, 34]));
+        // Rejections.
+        assert!(dns::parse_response(&r[..end], 0x9999).is_none(), "wrong id");
+        let mut no_ans = r;
+        no_ans[6..8].copy_from_slice(&0u16.to_be_bytes()); // ANCOUNT 0
+        assert!(dns::parse_response(&no_ans[..end], 0xabcd).is_none(), "no answers");
     }
 }
