@@ -150,6 +150,7 @@ $mustMatch1 = @(
     "net: adopted ip 10.0.2.15",
     "net: resolved 10.0.2.2 -> 52:55:0a:00:02:02 \(src 10.0.2.15\)",
     "net: ping 10.0.2.2: reply \(seq 0\)",
+    "net: replied to inbound ping \(self-demo, seq 0\)",
     "shell: ready \(type 'help'\)",
     "commands: help, kb, diag",
     "KB-0005 \(seen \d+\)  User-space component terminated by a fatal fault",
@@ -202,11 +203,11 @@ if ($missing1.Count -eq 0 -and $missing2.Count -eq 0) {
     exit 0
 } else {
     if ($missing1.Count -ne 0) {
-        Write-Host "BOOT TEST FAIL (boot 1): missing within 60s: $($missing1 -join ', '). Serial output:" -ForegroundColor Red
+        Write-Host "BOOT TEST FAIL (boot 1): missing within 90s: $($missing1 -join ', '). Serial output:" -ForegroundColor Red
         Read-LogText $serialLog | Write-Host
     }
     if ($missing2.Count -ne 0) {
-        Write-Host "BOOT TEST FAIL (boot 2, cross-boot write-back): missing within 60s: $($missing2 -join ', '). Serial output:" -ForegroundColor Red
+        Write-Host "BOOT TEST FAIL (boot 2, cross-boot write-back): missing within 90s: $($missing2 -join ', '). Serial output:" -ForegroundColor Red
         Read-LogText $serialLog2 | Write-Host
     }
     exit 1
