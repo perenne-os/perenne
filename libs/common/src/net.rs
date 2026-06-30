@@ -403,6 +403,66 @@ pub mod icmp {
             && super::be16(&frame[c + 4..c + 6]) == ident
             && super::be16(&frame[c + 6..c + 8]) == seq
     }
+
+    /// True iff `frame` is an IPv4/ICMP Echo Request (type 8) whose destination
+    /// IP is `our_ip`.
+    pub fn is_echo_request(frame: &[u8], our_ip: [u8; 4]) -> bool {
+        let eth = super::ETH_HDR_LEN;
+        if frame.len() < eth + ipv4::IPV4_HDR_LEN + ICMP_HDR_LEN {
+            return false;
+        }
+        if super::be16(&frame[12..14]) != ipv4::ETHERTYPE_IPV4 {
+            return false;
+        }
+        let ihl = (frame[eth] & 0x0f) as usize * 4;
+        if ihl < ipv4::IPV4_HDR_LEN || frame.len() < eth + ihl + ICMP_HDR_LEN {
+            return false;
+        }
+        if frame[eth + 9] != PROTO_ICMP || frame[eth + 16..eth + 20] != our_ip {
+            return false;
+        }
+        frame[eth + ihl] == ICMP_ECHO_REQUEST
+    }
+
+    /// Given a received ICMP Echo Request `request`, build the Echo Reply into
+    /// `out`: swap Ethernet src/dst MAC, swap IPv4 src/dst, set ICMP type 0, keep
+    /// code/identifier/sequence/payload, recompute both checksums. Returns the
+    /// reply length, or `None` if `request` is too short / not an ICMP echo.
+    pub fn build_echo_reply(request: &[u8], out: &mut [u8]) -> Option<usize> {
+        let eth = super::ETH_HDR_LEN;
+        if request.len() < eth + ipv4::IPV4_HDR_LEN + ICMP_HDR_LEN {
+            return None;
+        }
+        if super::be16(&request[12..14]) != ipv4::ETHERTYPE_IPV4 || request[eth + 9] != PROTO_ICMP {
+            return None;
+        }
+        let ihl = (request[eth] & 0x0f) as usize * 4;
+        if ihl < ipv4::IPV4_HDR_LEN || request.len() < eth + ihl + ICMP_HDR_LEN {
+            return None;
+        }
+        let total = request.len();
+        // Ethernet: dst = request's src, src = request's dst.
+        out[0..6].copy_from_slice(&request[6..12]);
+        out[6..12].copy_from_slice(&request[0..6]);
+        out[12..14].copy_from_slice(&ipv4::ETHERTYPE_IPV4.to_be_bytes());
+        // IPv4: rebuild with src/dst swapped (covers the same ICMP length).
+        let mut src_ip = [0u8; 4];
+        src_ip.copy_from_slice(&request[eth + 16..eth + 20]); // request's dst -> our src
+        let mut dst_ip = [0u8; 4];
+        dst_ip.copy_from_slice(&request[eth + 12..eth + 16]); // request's src -> our dst
+        let icmp_len = total - eth - ihl;
+        ipv4::build_header(src_ip, dst_ip, PROTO_ICMP, icmp_len, 0, &mut out[eth..eth + ipv4::IPV4_HDR_LEN]);
+        // ICMP: copy the message, flip type to reply, recompute checksum.
+        let c = eth + ipv4::IPV4_HDR_LEN;
+        let rc = eth + ihl;
+        out[c..c + icmp_len].copy_from_slice(&request[rc..rc + icmp_len]);
+        out[c] = ICMP_ECHO_REPLY;
+        out[c + 1] = 0; // code
+        out[c + 2..c + 4].copy_from_slice(&0u16.to_be_bytes());
+        let csum = ipv4::checksum(&out[c..c + icmp_len]);
+        out[c + 2..c + 4].copy_from_slice(&csum.to_be_bytes());
+        Some(c + icmp_len)
+    }
 }
 
 #[cfg(test)]
@@ -600,5 +660,47 @@ mod tests {
         frame[14] = 0x45; // version 4, IHL 5
         frame[14 + 9] = 17; // protocol UDP, not ICMP
         assert!(!icmp::parse_echo_reply(&frame, 0x1234, 0));
+    }
+
+    #[test]
+    fn icmp_build_echo_reply_swaps_and_echoes() {
+        let our_mac = [0x52u8, 0x54, 0x00, 0x12, 0x34, 0x56];
+        let peer_mac = [0x52u8, 0x55, 0x0a, 0x00, 0x02, 0x02];
+        let our_ip = [10u8, 0, 2, 15];
+        let peer_ip = [10u8, 0, 2, 2];
+        let payload = b"loopback";
+        // A request the peer sent us: peer_mac/peer_ip -> our_mac/our_ip.
+        let mut req = [0u8; 128];
+        let n = icmp::build_echo_request(&peer_mac, &our_mac, peer_ip, our_ip, 0x4321, 7, payload, &mut req);
+        assert!(icmp::is_echo_request(&req[..n], our_ip), "request addressed to us");
+        assert!(!icmp::is_echo_request(&req[..n], [9, 9, 9, 9]), "not addressed to 9.9.9.9");
+        // Build the reply.
+        let mut reply = [0u8; 128];
+        let m = icmp::build_echo_reply(&req[..n], &mut reply).unwrap();
+        assert_eq!(m, n, "same length (payload echoed)");
+        // Ethernet swapped: reply dst = request src (peer), reply src = request dst (us).
+        assert_eq!(&reply[0..6], &peer_mac, "reply dst mac = requester");
+        assert_eq!(&reply[6..12], &our_mac, "reply src mac = us");
+        // IPv4 swapped (src at 26..30, dst at 30..34) and checksums verify.
+        assert_eq!(&reply[26..30], &our_ip, "reply src ip = us");
+        assert_eq!(&reply[30..34], &peer_ip, "reply dst ip = requester");
+        assert_eq!(ipv4::checksum(&reply[14..34]), 0, "ipv4 header verifies");
+        // ICMP: type 0, payload echoed, checksum verifies.
+        assert_eq!(reply[34], icmp::ICMP_ECHO_REPLY, "echo reply");
+        assert_eq!(&reply[42..42 + payload.len()], payload, "payload echoed");
+        assert_eq!(ipv4::checksum(&reply[34..m]), 0, "icmp checksum verifies");
+        // The reply is NOT an echo request.
+        assert!(!icmp::is_echo_request(&reply[..m], peer_ip));
+    }
+
+    #[test]
+    fn icmp_build_echo_reply_rejects_non_request() {
+        // A non-ICMP frame yields None.
+        let mut frame = [0u8; 64];
+        frame[12..14].copy_from_slice(&0x0800u16.to_be_bytes());
+        frame[14] = 0x45;
+        frame[14 + 9] = 17; // UDP
+        let mut out = [0u8; 64];
+        assert!(icmp::build_echo_reply(&frame, &mut out).is_none());
     }
 }
