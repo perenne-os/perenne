@@ -31,7 +31,7 @@
   <g font-family="'Space Grotesk','Segoe UI',system-ui,sans-serif">
     <text x="560" y="268" font-size="108" font-weight="700" fill="#E9EEE9" letter-spacing="-1">Perenne</text>
     <text x="562" y="332" font-size="40" font-weight="600" fill="#63D89C" font-family="'IBM Plex Sans','Segoe UI',sans-serif">An OS that remembers.</text>
-    <text x="562" y="378" font-size="25" font-weight="400" fill="#9DB0A6" font-family="'IBM Plex Sans','Segoe UI',sans-serif">Secure &#183; self-healing &#183; post-quantum microkernel, from scratch in Rust.</text>
+    <text x="562" y="378" font-size="26" font-weight="400" fill="#9DB0A6" font-family="'IBM Plex Sans','Segoe UI',sans-serif">Secure &#183; self-healing &#183; post-quantum &#183; Rust</text>
   </g>
 
   <!-- self-healing strip -->
