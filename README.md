@@ -6,6 +6,8 @@
 
 > **Status:** a coherent, demonstrable microkernel. **Phases 0–21 complete** — a secure capability core, drivers as isolated user-space components, post-quantum-keyed encrypted IPC, a full self-healing loop that learns across reboots, and a working network stack (DHCP, ping, DNS). Boots under QEMU/riscv64; all milestones verified by an automated boot test. *(This is a deliberate, multi-year, solo, open-source effort — correctness and security before speed and features.)*
 
+> 👉 **New here? Take the [3-minute visual tour](docs/architecture/showcase.md)** — diagrams of the three pillars and how they fit together.
+
 ---
 
 ## What it does today
@@ -120,7 +122,7 @@ Full details: [`docs/roadmap/roadmap.md`](docs/roadmap/roadmap.md). Each phase's
 ## Documentation map
 
 - [Vision](docs/vision/) — the north star and guiding principles
-- [Architecture](docs/architecture/) — overview, security model, hardware abstraction, self-healing
+- [Architecture](docs/architecture/) — the [3-minute visual tour](docs/architecture/showcase.md), overview, security model, hardware abstraction, self-healing
 - [Decisions](docs/decisions/) — the ADRs (the *why* behind every major choice)
 - [Design](docs/design/) — per-change specs & plans (the *what/why* and *how* of each phase)
 - [Roadmap](docs/roadmap/roadmap.md) — the phase-by-phase journey

@@ -1,6 +1,7 @@
 # Architecture Overview
 
-This document is the big picture. The detailed pieces live in
+This document is the big picture. For a fast, visual tour with diagrams, see
+[`showcase.md`](showcase.md). The detailed pieces live in
 [`security-model.md`](security-model.md),
 [`hardware-abstraction.md`](hardware-abstraction.md), and
 [`self-healing.md`](self-healing.md).
