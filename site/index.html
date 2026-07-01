@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Perenne — an OS that remembers</title>
+<meta name="description" content="A security-first, self-healing microkernel written from scratch in Rust. It diagnoses its own crashes — and learns from them across reboots." />
+<meta property="og:title" content="Perenne — an OS that remembers" />
+<meta property="og:description" content="A security-first, self-healing microkernel in Rust. It diagnoses its own crashes and learns from them across reboots." />
+<meta property="og:type" content="website" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 29V13' fill='none' stroke='%235FD69A' stroke-width='2.5' stroke-linecap='round'/%3E%3Cpath d='M16 17C16 12 12 9 6 9c0 6 4 8 10 8z' fill='%235FD69A'/%3E%3Cpath d='M16 14c0-5 4-8 10-8 0 6-4 8-10 8z' fill='%233FA876'/%3E%3C/svg%3E" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="nav">
+  <a class="brand" href="#top" aria-label="Perenne home">
+    <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+      <path d="M16 29V13" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+      <path d="M16 17C16 12 12 9 6 9c0 6 4 8 10 8z" fill="currentColor"/>
+      <path d="M16 14c0-5 4-8 10-8 0 6-4 8-10 8z" fill="currentColor" opacity="0.55"/>
+    </svg>
+    <span class="brand-name">Perenne</span>
+  </a>
+  <nav class="nav-links" aria-label="Primary">
+    <a href="#healing">Self-healing</a>
+    <a href="#pillars">Architecture</a>
+    <a href="https://github.com/perenne-os/perenne/blob/main/DEMO.md">Demo</a>
+    <a class="nav-cta" href="https://github.com/perenne-os/perenne">GitHub ↗</a>
+  </nav>
+</header>
+
+<main id="main">
+  <span id="top"></span>
+
+  <!-- HERO -->
+  <section class="hero">
+    <div class="hero-copy">
+      <p class="eyebrow">Rust · RISC-V · capability microkernel</p>
+      <h1 class="title">Perenne</h1>
+      <p class="tagline">An OS that remembers.</p>
+      <p class="lede">
+        A security-first microkernel, written from scratch in Rust. Its drivers,
+        network, and services run as isolated, restartable components — and when
+        one crashes, the OS diagnoses it, fixes it inside a safety cage, and
+        <em>remembers the fix across reboots.</em>
+      </p>
+      <div class="cta-row">
+        <a class="btn btn-primary" href="https://github.com/perenne-os/perenne">View on GitHub</a>
+        <button class="btn btn-ghost" id="replay" type="button">Watch it boot ↻</button>
+      </div>
+      <p class="micro">Boots on QEMU/RISC-V · every milestone asserted by an automated test</p>
+    </div>
+
+    <div class="hero-term">
+      <div class="term" role="img" aria-label="Animated replay of Perenne's boot console: it boots, networks over DHCP and DNS, then a component crashes and the OS diagnoses, heals, and — on a second boot — recognizes the fault it recorded itself.">
+        <div class="term-bar">
+          <span class="term-dot"></span><span class="term-dot"></span><span class="term-dot"></span>
+          <span class="term-title">perenne — serial console</span>
+        </div>
+        <div class="term-body" id="term-body">
+          <noscript><p class="term-line dim">Enable JavaScript to watch the boot replay — or read the real transcript in <a href="https://github.com/perenne-os/perenne/blob/main/DEMO.md">DEMO.md</a>.</p></noscript>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- THE IDEA -->
+  <section class="idea" id="healing">
+    <p class="section-eyebrow">The difference</p>
+    <h2 class="idea-head">Most systems forget.<br />Perenne remembers.</h2>
+    <p class="idea-text">
+      A monolithic kernel that hits a bad driver takes the whole machine down with
+      it. Perenne keeps every service in its own isolated cell, so a crash is a
+      <em>contained event</em> — the start of a diagnosis, not the end of the system.
+    </p>
+    <ol class="cycle" aria-label="The self-healing cycle">
+      <li class="cycle-step fault"><span class="cycle-k">detect</span><span class="cycle-v">a component crashes — the fault is contained</span></li>
+      <li class="cycle-step"><span class="cycle-k">diagnose</span><span class="cycle-v">matched against a knowledge base read from disk</span></li>
+      <li class="cycle-step"><span class="cycle-k">cage</span><span class="cycle-v">a bounded, logged, reversible restart</span></li>
+      <li class="cycle-step heal"><span class="cycle-k">learn</span><span class="cycle-v">a never-seen fault is written to disk</span></li>
+      <li class="cycle-step heal"><span class="cycle-k">renew</span><span class="cycle-v">a later boot diagnoses the crash it documented itself</span></li>
+    </ol>
+    <p class="idea-foot">
+      That last step is the point. On a second boot of the same disk, Perenne reads
+      back the entry it wrote, recognizes a fault it had never seen before, and —
+      when an issue keeps recurring — <em>quarantines it instead of restarting it
+      forever.</em> It didn't just recover. It remembered, learned, and changed its mind.
+    </p>
+  </section>
+
+  <!-- PILLARS -->
+  <section class="pillars" id="pillars">
+    <p class="section-eyebrow">What's under the hood</p>
+    <div class="pillar-grid">
+      <article class="pillar">
+        <h3 class="pillar-title">Secure by construction</h3>
+        <p class="pillar-text">
+          A tiny privileged core. Drivers and services run unprivileged, each
+          holding only the <strong>capabilities</strong> it was granted — grantable
+          and revocable at runtime. A compromised driver can't take the machine.
+          A post-quantum ML-KEM secret keys an encrypted channel between components.
+        </p>
+        <code class="pillar-proof">crypto: channel session established (ML-KEM)</code>
+      </article>
+      <article class="pillar accent-heal">
+        <h3 class="pillar-title">Self-healing, and it learns</h3>
+        <p class="pillar-text">
+          A crash is contained, diagnosed against an on-disk knowledge base, and
+          fixed inside a bounded safety cage. A fault it has never seen gets
+          <strong>written to disk</strong> — so a later boot can diagnose it. Recurring
+          issues escalate and get quarantined.
+        </p>
+        <code class="pillar-proof">heal: diagnosed KB-0006 — the fault it wrote itself</code>
+      </article>
+      <article class="pillar">
+        <h3 class="pillar-title">Really networked</h3>
+        <p class="pillar-text">
+          A full stack, built bottom-up and host-tested: ARP, IPv4, UDP, ICMP, a
+          complete DHCP lease it <strong>adopts</strong> as its own address, ping in
+          and out, and live DNS — all through a NIC that itself runs as an
+          unprivileged component.
+        </p>
+        <code class="pillar-proof">net: dns example.com → 104.20.23.154</code>
+      </article>
+    </div>
+  </section>
+
+  <!-- RECEIPT -->
+  <section class="receipt">
+    <p class="section-eyebrow">Not a mock-up — verified on every boot</p>
+    <ul class="receipt-list">
+      <li><span class="ok">✓</span> Sv39 virtual memory, with W^X enforced by hardware</li>
+      <li><span class="ok">✓</span> a post-quantum-keyed, tamper-rejecting encrypted IPC channel</li>
+      <li><span class="ok">✓</span> a capability delegated between components, then revoked</li>
+      <li><span class="ok">✓</span> a DHCP lease adopted, the gateway pinged, a domain resolved</li>
+      <li><span class="ok">✓</span> a crash diagnosed, healed, and — next boot — <em>remembered</em></li>
+    </ul>
+    <p class="receipt-note">
+      21 phases, each its own design → plan → build → learning-note cycle. The whole
+      history is public.
+    </p>
+  </section>
+
+  <!-- CLOSING -->
+  <section class="closing">
+    <h2 class="closing-head">Read the story.</h2>
+    <div class="closing-links">
+      <a class="closing-link" href="https://github.com/perenne-os/perenne/blob/main/DEMO.md">
+        <span class="cl-k">The grand demo</span>
+        <span class="cl-v">one command, boots twice, heals a fault it wrote itself →</span>
+      </a>
+      <a class="closing-link" href="https://github.com/perenne-os/perenne/blob/main/docs/architecture/showcase.md">
+        <span class="cl-k">The 3-minute tour</span>
+        <span class="cl-v">diagrams of the three pillars and how they fit →</span>
+      </a>
+      <a class="closing-link" href="https://github.com/perenne-os/perenne/tree/main/docs/decisions">
+        <span class="cl-k">The decisions</span>
+        <span class="cl-v">the reasoning behind every major choice →</span>
+      </a>
+    </div>
+    <a class="btn btn-primary btn-lg" href="https://github.com/perenne-os/perenne">Explore the repository</a>
+  </section>
+</main>
+
+<footer class="foot">
+  <div class="foot-mark">
+    <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+      <path d="M16 29V13" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+      <path d="M16 17C16 12 12 9 6 9c0 6 4 8 10 8z" fill="currentColor"/>
+      <path d="M16 14c0-5 4-8 10-8 0 6-4 8-10 8z" fill="currentColor" opacity="0.55"/>
+    </svg>
+    <span>Perenne</span>
+  </div>
+  <p class="foot-line"><em>Perenne</em> — perennial: it dies back, recovers, and returns, renewed.</p>
+  <p class="foot-meta">Rust · RISC-V · Apache-2.0 · <a href="https://github.com/perenne-os/perenne">github.com/perenne-os/perenne</a></p>
+</footer>
+
+<script src="app.js" defer></script>
+</body>
+</html>

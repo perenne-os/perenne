@@ -4,6 +4,8 @@
 
 > The name **Perenne** (*puh-REN-eh*, from *perennial*) is the thesis in one word: a system that dies back, recovers, and returns each cycle — renewed by what it learned. See [ADR 0008](docs/decisions/0008-project-name-perenne.md).
 
+> 🌐 **[perenne-os.github.io/perenne](https://perenne-os.github.io/perenne/)** — the landing page, with an animated replay of the boot.
+
 > **Status:** a coherent, demonstrable microkernel. **Phases 0–21 complete** — a secure capability core, drivers as isolated user-space components, post-quantum-keyed encrypted IPC, a full self-healing loop that learns across reboots, and a working network stack (DHCP, ping, DNS). Boots under QEMU/riscv64; all milestones verified by an automated boot test. *(This is a deliberate, multi-year, solo, open-source effort — correctness and security before speed and features.)*
 
 > 👉 **New here?** Take the **[3-minute visual tour](docs/architecture/showcase.md)** (diagrams of the three pillars), or read **[the grand demo](DEMO.md)** — one command that boots the whole system and, on a second boot, watches it heal a fault *it documented itself*.
