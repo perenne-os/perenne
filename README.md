@@ -6,7 +6,7 @@
 
 > **Status:** a coherent, demonstrable microkernel. **Phases 0–21 complete** — a secure capability core, drivers as isolated user-space components, post-quantum-keyed encrypted IPC, a full self-healing loop that learns across reboots, and a working network stack (DHCP, ping, DNS). Boots under QEMU/riscv64; all milestones verified by an automated boot test. *(This is a deliberate, multi-year, solo, open-source effort — correctness and security before speed and features.)*
 
-> 👉 **New here? Take the [3-minute visual tour](docs/architecture/showcase.md)** — diagrams of the three pillars and how they fit together.
+> 👉 **New here?** Take the **[3-minute visual tour](docs/architecture/showcase.md)** (diagrams of the three pillars), or read **[the grand demo](DEMO.md)** — one command that boots the whole system and, on a second boot, watches it heal a fault *it documented itself*.
 
 ---
 
@@ -108,6 +108,7 @@ Expect the OpenSBI banner, then `hello world from Perenne - Phase 4a (hart 0)` a
 ```powershell
 ./tools/test-qemu.ps1
 ```
+For an annotated, act-by-act walkthrough of exactly what that run proves, see **[the grand demo](DEMO.md)**.
 
 See [`docs/learning/0001-dev-environment.md`](docs/learning/0001-dev-environment.md) for environment notes (and the WSL2 alternative).
 
