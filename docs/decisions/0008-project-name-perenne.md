@@ -60,7 +60,7 @@ brand.
    reads `… from Perenne …`).
 3. ⏸️ Crate names — intentionally kept (see Decision); optional later.
 4. ✅ Documentation brand references (README, vision, glossary) updated to
-   **Perenne**; historical `docs/superpowers/plans/*` records are left as-is (they
+   **Perenne**; historical `docs/design/plans/*` records are left as-is (they
    document what was true at the time).
 5. ⏸️ Repository / folder name — the GitHub repo will be `perenne` under
    `perenne-os`; the local working folder rename is cosmetic and optional.

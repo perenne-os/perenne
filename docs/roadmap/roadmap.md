@@ -1,6 +1,6 @@
 # Roadmap
 
-A living document. Think in **years, not months** — each phase is small, real, and finishable, and teaches the concept the next one needs. Every phase gets its own design → plan → build cycle (specs in `docs/superpowers/specs/`, plans in `docs/superpowers/plans/`).
+A living document. Think in **years, not months** — each phase is small, real, and finishable, and teaches the concept the next one needs. Every phase gets its own design → plan → build cycle (specs in `docs/design/specs/`, plans in `docs/design/plans/`).
 
 ## Phase 0 — Foundation & vision  *(done — 2026-06-06)*
 

@@ -5,7 +5,7 @@
 #      (e.g. in prose or backticks) exists on disk.
 #   3. Every Markdown link target ending in .md  [text](path.md)  resolves,
 #      relative to the file it appears in (handles ../ and root-relative links).
-# Historical snapshots under docs/superpowers/ (plans, specs) are excluded, as
+# Historical snapshots under docs/design/ (plans, specs) are excluded, as
 # are build artifacts under target/.
 # Usage: ./tools/check-references.ps1   (exits non-zero if any reference is broken)
 $ErrorActionPreference = "Stop"
@@ -22,7 +22,7 @@ $runtimeGeneratedKb = @('KB-0006')
 
 $files = Get-ChildItem -Path $root -Recurse -Filter *.md -File |
     Where-Object {
-        $_.FullName -notmatch '[\\/]docs[\\/]superpowers[\\/]' -and
+        $_.FullName -notmatch '[\\/]docs[\\/]design[\\/]' -and
         $_.FullName -notmatch '[\\/]target[\\/]'
     }
 

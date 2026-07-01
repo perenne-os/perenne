@@ -75,7 +75,7 @@ Full rationale lives in [`docs/decisions/`](docs/decisions/) (Architecture Decis
 ## Repository layout
 
 ```
-docs/            Vision, architecture, decisions (ADRs), roadmap, glossary, per-phase design+plan+learning notes
+docs/            Vision, architecture, decisions (ADRs), roadmap, glossary, design (specs + plans), learning notes
 knowledge-base/  The self-healing organism's memory: issue + fix records and their schema
 kernel/          The microkernel — freestanding no_std binary
 arch/riscv64/    Architecture-specific code (first target): traps, paging, scheduler, caps/IPC, drivers
@@ -115,13 +115,14 @@ Perenne grows in small, finishable **phases**, each its own *design → plan →
 
 **0** foundation · **1** hello-world kernel · **2** memory / traps / scheduling · **3** security spine (user mode, capabilities + IPC, post-quantum primitive) · **4** real-hardware groundwork (device tree, UART) · **5** self-healing seed (detect + caged fix) · **6–7** persistent storage + the living, *learning* knowledge base · **8–13** dynamic capabilities (delegation, revocation) + an interactive diagnosis shell + counter-driven escalation & quarantine · **14** post-quantum encrypted IPC · **15–21** the network stack (virtio-net, ARP, IPv4/UDP, DHCP, ICMP ping in/out, DNS).
 
-Full details: [`docs/roadmap/roadmap.md`](docs/roadmap/roadmap.md). Each phase's spec, plan, and a short "what I learned" note live under [`docs/`](docs/).
+Full details: [`docs/roadmap/roadmap.md`](docs/roadmap/roadmap.md). Each phase's spec + plan live under [`docs/design/`](docs/design/) and a short "what I learned" note under [`docs/learning/`](docs/learning/).
 
 ## Documentation map
 
 - [Vision](docs/vision/) — the north star and guiding principles
 - [Architecture](docs/architecture/) — overview, security model, hardware abstraction, self-healing
 - [Decisions](docs/decisions/) — the ADRs (the *why* behind every major choice)
+- [Design](docs/design/) — per-change specs & plans (the *what/why* and *how* of each phase)
 - [Roadmap](docs/roadmap/roadmap.md) — the phase-by-phase journey
 - [Glossary](docs/glossary.md) — plain-language definitions for newcomers
 - [Learning notes](docs/learning/) — a short, honest note per phase

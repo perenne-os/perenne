@@ -1,8 +1,10 @@
-# Brainstorming / visual-companion scratch files
+# Local AI/agent tool scratch & settings (may contain personal info).
+# These are whatever coding assistant a contributor happens to use; never
+# committed. Add your own tool's local dir here as needed.
 .superpowers/
-
-# Local Claude Code settings (may contain personal info)
 .claude/
+.aider*
+.cursor/
 
 # Rust / Cargo build output
 /target/
