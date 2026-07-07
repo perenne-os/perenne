@@ -1839,6 +1839,33 @@ mod bare {
                             if let Some(ip) = net::dns::parse_response(payload, txid) {
                                 println!("net: dns example.com -> {}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3]);
                                 resolved = true;
+
+                                // --- PING the resolved IP (ICMP echo) from the adopted IP ---
+                                let ping_ident = 0x5555u16;
+                                let ping_seq = 0u16;
+                                let ping_frame_len = {
+                                    let txf = core::slice::from_raw_parts_mut(tx_frame as *mut u8, 128);
+                                    net::icmp::build_echo_request(&src_mac, &mac, NET_IP, ip, ping_ident, ping_seq, b"dns-ping", txf)
+                                };
+                                let rx_ping_len = sched::call_message(NET_EP_CAP, 12 + ping_frame_len);
+                                let mut ping_replied = false;
+                                if rx_ping_len != 0 {
+                                    let flen = rx_ping_len.saturating_sub(12).min(2036);
+                                    let rxf = core::slice::from_raw_parts(rx_frame as *const u8, flen);
+                                    if net::icmp::parse_echo_reply(rxf, ping_ident, ping_seq) {
+                                        println!(
+                                            "net: ping example.com ({}.{}.{}.{}): reply (seq {})",
+                                            ip[0], ip[1], ip[2], ip[3], ping_seq
+                                        );
+                                        ping_replied = true;
+                                    }
+                                }
+                                if !ping_replied {
+                                    println!(
+                                        "net: ping example.com ({}.{}.{}.{}): no reply",
+                                        ip[0], ip[1], ip[2], ip[3]
+                                    );
+                                }
                             }
                         }
                     }

@@ -645,10 +645,15 @@ than the recent increments:
   directly — real round-trip, no fallback. No new task, no MAX_TASKS change.
   QEMU-only.
 
-## Phase 22+ — Breadth
+## Phase 22 — Ping the DNS-resolved IP  *(done — 2026-07-07)*
 
-- **Goal:** the long tail — **use** the resolved IP for a real exchange
-  (ping/connect to it); DNS caching + AAAA/other record types; a persistent ping
+- **Goal:** use the live IP address resolved via DNS to send an ICMP Echo Request and parse the Echo Reply, proving the IP layer can route packets externally via the gateway MAC.
+- **You learn:** how the client stack composes DNS resolution and ICMP pinging into a complete end-to-end network interaction, and how to handle network timeouts robustly.
+- **Done when:** ✅ `./tools/test-qemu.ps1` observes `net: ping example.com (<ip>): reply` (or `no reply` in offline/ICMP-blocked environments).
+
+## Phase 23+ — Breadth
+
+- **Goal:** the long tail — DNS caching + AAAA/other record types; a persistent ping
   responder (the driver as a long-lived RX service, not a bounded one-shot);
   replying to *external* pings via a non-SLIRP backend (tap / second QEMU); ping
   RTT/statistics; ICMP error types (destination-unreachable, TTL-exceeded); DHCP
